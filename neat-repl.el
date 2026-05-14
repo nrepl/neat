@@ -39,6 +39,21 @@
   :type 'integer
   :group 'neat)
 
+(defface neat-repl-output
+  '((t :inherit shadow))
+  "Face for `out' (stdout) chunks streamed back from the server."
+  :group 'neat)
+
+(defface neat-repl-error
+  '((t :inherit error))
+  "Face for `err' chunks and exception summaries from the server."
+  :group 'neat)
+
+(defface neat-repl-value
+  '((t :inherit font-lock-constant-face))
+  "Face for `value' lines produced by an eval."
+  :group 'neat)
+
 (defvar-local neat-repl-connection nil
   "The `neat-connection' associated with this REPL buffer.")
 
@@ -56,7 +71,8 @@
   (setq-local comint-prompt-read-only t)
   (setq-local comint-input-sender #'neat-repl--input-sender)
   (setq-local comint-use-prompt-regexp nil)
-  (setq-local comint-scroll-show-maximum-output t))
+  (setq-local comint-scroll-show-maximum-output t)
+  (add-hook 'kill-buffer-hook #'neat-repl--kill-buffer-cleanup nil t))
 
 (defun neat-repl-buffer-name (conn)
   "Return the canonical REPL buffer name for CONN."
@@ -97,16 +113,17 @@ purpose is to satisfy `comint-output-filter' and friends."
 
 (defun neat-repl--input-sender (_proc input)
   "Eval INPUT on the current REPL buffer's connection."
-  (let ((buffer (current-buffer))
-        (conn neat-repl-connection))
+  (let* ((buffer (current-buffer))
+         (conn neat-repl-connection)
+         (trimmed (string-trim-right input)))
     (cond
      ((not conn)
-      (message "neat: no connection in this buffer"))
-     ((string-empty-p (string-trim input))
+      (message "Neat: no connection in this buffer"))
+     ((string-empty-p trimmed)
       (neat-repl--insert-prompt))
      (t
       (neat-eval
-       conn input nil
+       conn trimmed nil
        (lambda (resp)
          (when (buffer-live-p buffer)
            (with-current-buffer buffer
@@ -122,14 +139,17 @@ purpose is to satisfy `comint-output-filter' and friends."
         (status (neat-bencode-get resp "status")))
     (when proc
       (when out
-        (comint-output-filter proc out))
+        (comint-output-filter
+         proc (propertize out 'face 'neat-repl-output)))
       (when err
-        (comint-output-filter proc (propertize err 'face 'error)))
+        (comint-output-filter
+         proc (propertize err 'face 'neat-repl-error)))
       (when value
-        (comint-output-filter proc (concat value "\n")))
+        (comint-output-filter
+         proc (concat (propertize value 'face 'neat-repl-value) "\n")))
       (when ex
         (comint-output-filter
-         proc (propertize (format "%s\n" ex) 'face 'error)))
+         proc (propertize (format "%s\n" ex) 'face 'neat-repl-error)))
       (when (member "done" status)
         (comint-output-filter proc neat-repl-prompt)))))
 
@@ -144,11 +164,21 @@ purpose is to satisfy `comint-output-filter' and friends."
   "Disconnect from the nREPL server and bury this buffer."
   (interactive)
   (when neat-repl-connection
-    (neat-disconnect neat-repl-connection))
+    (neat-disconnect neat-repl-connection)
+    (setq neat-repl-connection nil))
   (let ((proc (get-buffer-process (current-buffer))))
     (when (process-live-p proc)
       (delete-process proc)))
   (bury-buffer))
+
+(defun neat-repl--kill-buffer-cleanup ()
+  "Tear down the connection and pipe process when the REPL buffer dies."
+  (when (and neat-repl-connection
+             (neat-connection-live-p neat-repl-connection))
+    (ignore-errors (neat-disconnect neat-repl-connection)))
+  (let ((proc (get-buffer-process (current-buffer))))
+    (when (process-live-p proc)
+      (delete-process proc))))
 
 (provide 'neat-repl)
 ;;; neat-repl.el ends here
