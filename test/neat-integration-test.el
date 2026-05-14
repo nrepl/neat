@@ -43,6 +43,13 @@
      :executable "bb"
      :command-fn ,(lambda () (list "bb" "nrepl-server" "localhost:0"))
      :port-regexp "Started nREPL server at [^:]+:\\([0-9]+\\)"
+     :startup-timeout 30)
+    (:name "Basilisp"
+     :executable "basilisp"
+     :command-fn ,(lambda () (list "basilisp" "nrepl-server"))
+     ;; Basilisp prints the same banner shape as nrepl/nrepl, so we
+     ;; can reuse the Clojure regex verbatim.
+     :port-regexp "nREPL server started on port \\([0-9]+\\)"
      :startup-timeout 30))
   "Implementations the integration suite knows how to drive.
 Each entry is a plist with :name, :executable, :command-fn (returns the
@@ -185,14 +192,17 @@ TIMEOUT defaults to 10 seconds."
                conn (lambda ()
                       (not (gethash id (neat-connection-pending conn))))
                15)
-              (let ((out-resp (cl-find-if
-                               (lambda (r) (neat-bencode-get r "out"))
-                               responses))
+              ;; Different implementations chunk `out' differently:
+              ;; Clojure batches "hi\\n", Basilisp splits it into "hi"
+              ;; and "\\n" messages.  Concatenate everything we got.
+              (let ((all-out (mapconcat
+                              (lambda (r) (or (neat-bencode-get r "out") ""))
+                              (reverse responses)
+                              ""))
                     (val-resp (cl-find-if
                                (lambda (r) (neat-bencode-get r "value"))
                                responses)))
-                (expect out-resp :not :to-be nil)
-                (expect (neat-bencode-get out-resp "out") :to-match "hi")
+                (expect all-out :to-match "hi")
                 (expect val-resp :not :to-be nil)
                 (expect (neat-bencode-get val-resp "value")
                         :to-equal ":ok")))))))))

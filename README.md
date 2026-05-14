@@ -100,6 +100,7 @@ that's installed on PATH. Currently:
 |----------------|------------|----------------|
 | Clojure (`nrepl/nrepl`) | `clojure` | [clojure.org/guides/install_clojure](https://clojure.org/guides/install_clojure) |
 | [Babashka](https://babashka.org) | `bb` | `brew install borkdude/brew/babashka` |
+| [Basilisp](https://basilisp.readthedocs.io) (Python) | `basilisp` | `pipx install basilisp` |
 
 Add more entries to the list to teach the suite about your favorite
 nREPL implementation -- it just needs an executable that prints a port
