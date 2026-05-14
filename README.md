@@ -1,5 +1,7 @@
 # neat
 
+[![CI](https://github.com/nrepl/neat/actions/workflows/ci.yml/badge.svg)](https://github.com/nrepl/neat/actions/workflows/ci.yml)
+
 A small, language-agnostic [nREPL][nrepl] client for Emacs, in the spirit of
 [monroe][monroe].
 

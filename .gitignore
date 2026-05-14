@@ -3,3 +3,4 @@
 /dist/
 /test/__eldev-loader__.el
 /neat-autoloads.el
+/.nrepl-port

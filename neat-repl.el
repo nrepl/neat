@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026  Bozhidar Batsov
 
 ;; Author: Bozhidar Batsov <bozhidar@batsov.dev>
-;; URL: https://github.com/bbatsov/neat
+;; URL: https://github.com/nrepl/neat
 ;; Version: 0.0.1
 ;; Keywords: languages, tools
 ;; SPDX-License-Identifier: GPL-3.0-or-later

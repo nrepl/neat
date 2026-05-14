@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs_version:
+          - '28.2'
+          - '29.4'
+          - '30.1'
+          - snapshot
+    continue-on-error: ${{ matrix.emacs_version == 'snapshot' }}
+    name: Emacs ${{ matrix.emacs_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: purcell/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs_version }}
+
+      - uses: emacs-eldev/setup-eldev@v1
+
+      - name: Show versions
+        run: |
+          emacs --version
+          eldev --version
+
+      - name: Byte-compile
+        run: eldev compile --warnings-as-errors
+
+      - name: Lint
+        run: eldev lint
+
+      - name: Test
+        run: eldev test

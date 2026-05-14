@@ -3,9 +3,9 @@
 ;; Copyright (C) 2026  Bozhidar Batsov
 
 ;; Author: Bozhidar Batsov <bozhidar@batsov.dev>
-;; URL: https://github.com/bbatsov/neat
+;; URL: https://github.com/nrepl/neat
 ;; Version: 0.0.1
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "28.2"))
 ;; Keywords: languages, tools
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -29,7 +29,7 @@
   "A language-agnostic nREPL client for Emacs."
   :group 'tools
   :prefix "neat-"
-  :link '(url-link :tag "GitHub" "https://github.com/bbatsov/neat"))
+  :link '(url-link :tag "GitHub" "https://github.com/nrepl/neat"))
 
 
 ;;;; Active connection

@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026  Bozhidar Batsov
 
 ;; Author: Bozhidar Batsov <bozhidar@batsov.dev>
-;; URL: https://github.com/bbatsov/neat
+;; URL: https://github.com/nrepl/neat
 ;; Version: 0.0.1
 ;; Keywords: languages, tools
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -183,8 +183,8 @@ equivalent middleware.  CALLBACK, if given, fires for each response."
 ;; response arrives or the timeout fires.
 
 (defun neat-client--block-for-done (conn timeout done-p)
-  "Pump CONN's process output until DONE-P returns non-nil.
-Gives up after TIMEOUT seconds."
+  "Pump CONN's process output until calling DONE-P yields non-nil.
+Give up after TIMEOUT seconds."
   (let ((deadline (+ (float-time) timeout)))
     (while (and (not (funcall done-p))
                 (< (float-time) deadline))
@@ -192,7 +192,7 @@ Gives up after TIMEOUT seconds."
 
 (defun neat-completions-sync (conn prefix &optional ns timeout)
   "Block until `completions' for PREFIX (in NS) come back from CONN.
-Returns the list of candidate dicts (typically `(\"candidate\" . \"foo\")
+Return the list of candidate dicts (typically `(\"candidate\" . \"foo\")
 `(\"type\" . \"function\")' shaped) or nil on timeout.
 TIMEOUT defaults to 1 second."
   (let (candidates done)
@@ -207,8 +207,8 @@ TIMEOUT defaults to 1 second."
     candidates))
 
 (defun neat-lookup-sync (conn sym &optional ns timeout)
-  "Block until a `lookup' for SYM (in NS) returns from CONN.
-Returns the `info' dict, or nil if absent / on timeout.
+  "Block until CONN responds to a `lookup' for SYM (in NS).
+Return the `info' dict, or nil if absent / on timeout.
 TIMEOUT defaults to 1 second."
   (let (info done)
     (neat-lookup
