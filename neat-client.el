@@ -89,7 +89,7 @@ request, after which the callback is unregistered.
 
 Returns the assigned id (a string)."
   (unless (neat-connection-live-p conn)
-    (error "Neat: connection is not live"))
+    (user-error "Neat: connection is not live"))
   (let* ((id (number-to-string (cl-incf (neat-connection-next-id conn))))
          (with-id (cons (cons "id" id) message)))
     (when callback
@@ -253,8 +253,10 @@ pruned afterwards."
          (status (neat-bencode-get message "status"))
          (callback (and id (gethash id (neat-connection-pending conn)))))
     (when callback
-      ;; Don't let a buggy callback nuke the whole filter.
-      (condition-case err
+      ;; Don't let a buggy callback nuke the whole filter.  Skip the
+      ;; trap when the user is debugging, so `toggle-debug-on-error'
+      ;; reveals the underlying problem instead of swallowing it.
+      (condition-case-unless-debug err
           (funcall callback message)
         (error (message "neat: callback error: %S" err))))
     (when (and id (member "done" status))
@@ -275,7 +277,7 @@ status and an `err' field describing REASON."
   (let ((pending (neat-connection-pending conn)))
     (maphash
      (lambda (id callback)
-       (condition-case _
+       (condition-case-unless-debug _
            (funcall callback
                     `(("id" . ,id)
                       ("status" . ("done" "interrupted"))

@@ -42,7 +42,7 @@
   "Per-buffer override for the active `neat-connection'.
 When non-nil, takes precedence over `neat-default-connection'.")
 
-(defun neat-current-connection ()
+(defun neat-active-connection ()
   "Return the active connection for the current buffer, or nil."
   (or neat-current-connection neat-default-connection))
 
@@ -56,7 +56,7 @@ When non-nil, takes precedence over `neat-default-connection'.")
 The new connection becomes `neat-default-connection', so source buffers
 with `neat-mode' enabled will use it automatically."
   (interactive
-   (list (read-string (format "Host (default %s): " neat-repl-default-host)
+   (list (read-string (format-prompt "Host" neat-repl-default-host)
                       nil nil neat-repl-default-host)
          (read-number "Port: " neat-repl-default-port)))
   (let* ((conn (neat-connect host port))
@@ -78,7 +78,7 @@ with `neat-mode' enabled will use it automatically."
 
 (defun neat--require-connection ()
   "Return the active connection, or signal a user-error."
-  (or (neat-current-connection)
+  (or (neat-active-connection)
       (user-error "Neat: no active connection; M-x neat to start one")))
 
 (defun neat--render-into-repl (conn resp)
@@ -151,20 +151,13 @@ with `neat-mode' enabled will use it automatically."
   :type 'number
   :group 'neat)
 
-(defcustom neat-lookup-timeout 0.3
-  "Seconds to wait for a `lookup' response before giving up.
-Kept short because eldoc fires often and a slow lookup is felt
-immediately."
-  :type 'number
-  :group 'neat)
-
 (defun neat-completion-at-point ()
   "`completion-at-point-functions' entry for `neat-mode'.
 Asks the server for completions of the symbol at point via the
 `completions' op and returns them as a static candidate list."
   (let ((bounds (bounds-of-thing-at-point 'symbol)))
     (when bounds
-      (let* ((conn (neat-current-connection))
+      (let* ((conn (neat-active-connection))
              (start (car bounds))
              (end (cdr bounds))
              (prefix (buffer-substring-no-properties start end)))
@@ -179,20 +172,36 @@ Asks the server for completions of the symbol at point via the
             (when cands
               (list start end cands :exclusive 'no))))))))
 
-(defun neat-eldoc-function ()
-  "Synchronous eldoc backend driven by the `lookup' op."
-  (let ((conn (neat-current-connection))
+(defun neat--eldoc-format (info)
+  "Pick the displayable string from a `lookup' INFO dict, or return nil."
+  (let* ((arglists (neat-bencode-get info "arglists-str"))
+         (doc (neat-bencode-get info "doc"))
+         (first-doc-line (and doc (car (split-string doc "\n")))))
+    (cond
+     ((and arglists first-doc-line)
+      (format "%s: %s" arglists first-doc-line))
+     (arglists arglists)
+     (first-doc-line first-doc-line))))
+
+(defun neat-eldoc-function (callback &rest _ignored)
+  "Eldoc backend driven by the `lookup' op.
+
+Conforms to `eldoc-documentation-functions': fires the supplied
+CALLBACK with the docstring once the server responds, so the UI
+never blocks waiting on a lookup.  When the user has moved point
+by the time the response arrives, eldoc may briefly show stale
+output -- acceptable trade-off for not blocking the editor."
+  (let ((conn (neat-active-connection))
         (sym (thing-at-point 'symbol t)))
     (when (and conn sym (neat-connection-live-p conn))
-      (let* ((info (neat-lookup-sync conn sym nil neat-lookup-timeout))
-             (arglists (and info (neat-bencode-get info "arglists-str")))
-             (doc (and info (neat-bencode-get info "doc")))
-             (first-doc-line (and doc (car (split-string doc "\n")))))
-        (cond
-         ((and arglists first-doc-line)
-          (format "%s: %s" arglists first-doc-line))
-         (arglists arglists)
-         (first-doc-line first-doc-line))))))
+      (neat-lookup
+       conn sym nil
+       (lambda (resp)
+         (when-let* ((info (neat-bencode-get resp "info"))
+                     (str (neat--eldoc-format info)))
+           (funcall callback str :thing sym))))
+      ;; Tell eldoc we'll call the callback asynchronously.
+      t)))
 
 
 ;;;; Minor mode
@@ -221,11 +230,13 @@ Bindings:
    (neat-mode
     (add-hook 'completion-at-point-functions
               #'neat-completion-at-point nil t)
-    (setq-local eldoc-documentation-function #'neat-eldoc-function))
+    (add-hook 'eldoc-documentation-functions
+              #'neat-eldoc-function nil t))
    (t
     (remove-hook 'completion-at-point-functions
                  #'neat-completion-at-point t)
-    (kill-local-variable 'eldoc-documentation-function))))
+    (remove-hook 'eldoc-documentation-functions
+                 #'neat-eldoc-function t))))
 
 (provide 'neat)
 ;;; neat.el ends here

@@ -68,16 +68,20 @@
       ;; If we got here without throwing, we're good.
       (expect t :to-be-truthy)))
 
-  (it "shields the filter from a buggy callback"
-    (let ((conn (neat-connection--make)))
+  (it "shields the filter from a buggy callback (production semantics)"
+    ;; The dispatch wraps callbacks in `condition-case-unless-debug',
+    ;; which deliberately steps aside under `debug-on-error' so the
+    ;; underlying bug surfaces during interactive development.  This
+    ;; test pins down the production behaviour, with the debug guard
+    ;; off.
+    (let ((conn (neat-connection--make))
+          (debug-on-error nil))
       (puthash "1" (lambda (_) (error "boom"))
                (neat-connection-pending conn))
-      ;; The error should be caught and not propagated out of drain.
       (expect (neat-client-test--push-bytes
                conn (neat-bencode-encode
                      '(("id" . "1") ("status" . ("done")))))
               :not :to-throw)
-      ;; And the done entry was still pruned.
       (expect (gethash "1" (neat-connection-pending conn)) :to-be nil))))
 
 (describe "neat-clone-session"
