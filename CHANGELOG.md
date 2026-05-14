@@ -17,3 +17,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `neat-completions` and `neat-lookup` library ops (plus blocking `*-sync` variants).
 - Completion-at-point and eldoc integration for `neat-mode` source buffers. Both require `cider-nrepl` (or a compatible middleware) on the server side.
 - REPL buffer styling: distinct faces for `out`, `err`, and `value` streams.
+- `.nrepl-port` discovery: `M-x neat` defaults the port to whatever the nearest port file contains, so in a project with a running server `M-x neat RET RET` is enough. Customize via `neat-port-file-name`; library entry points are `neat-discover-port` and `neat-discover-port-file`.

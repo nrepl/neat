@@ -47,18 +47,54 @@ When non-nil, takes precedence over `neat-default-connection'.")
   (or neat-current-connection neat-default-connection))
 
 
+;;;; Port-file discovery
+
+(defcustom neat-port-file-name ".nrepl-port"
+  "Name of the file an nREPL server drops in the project root.
+Walked up the directory tree from the current buffer to auto-fill the
+port in `neat'.  Override only if your tooling writes a different name."
+  :type 'string
+  :group 'neat)
+
+(defun neat-discover-port-file (&optional dir)
+  "Return the path to the nearest `neat-port-file-name', or nil.
+Searches upward from DIR (default: the current buffer's directory)."
+  (when-let* ((start (or dir buffer-file-name default-directory))
+              (containing (locate-dominating-file start neat-port-file-name)))
+    (expand-file-name neat-port-file-name containing)))
+
+(defun neat-discover-port (&optional dir)
+  "Return the port number from the nearest port file, or nil.
+The file is whatever `neat-port-file-name' names; search starts from
+DIR (default: the current buffer's directory).  Unreadable, empty, or
+non-numeric files are treated as \"not discovered\" and return nil."
+  (when-let ((path (neat-discover-port-file dir)))
+    (condition-case nil
+        (with-temp-buffer
+          (insert-file-contents path)
+          (let ((s (string-trim (buffer-string))))
+            (and (string-match-p "\\`[0-9]+\\'" s)
+                 (string-to-number s))))
+      (file-error nil))))
+
+
 ;;;; Connecting
 
 ;;;###autoload
 (defun neat (host port)
   "Connect to an nREPL server at HOST and PORT, and open a REPL buffer.
 
+When called interactively, the port defaults to whatever is in the
+nearest `.nrepl-port' file (see `neat-discover-port'), so in a project
+that has a running server `M-x neat RET RET' is enough.
+
 The new connection becomes `neat-default-connection', so source buffers
 with `neat-mode' enabled will use it automatically."
   (interactive
-   (list (read-string (format-prompt "Host" neat-repl-default-host)
-                      nil nil neat-repl-default-host)
-         (read-number "Port: " neat-repl-default-port)))
+   (let ((discovered (neat-discover-port)))
+     (list (read-string (format-prompt "Host" neat-repl-default-host)
+                        nil nil neat-repl-default-host)
+           (read-number "Port: " (or discovered neat-repl-default-port)))))
   (let* ((conn (neat-connect host port))
          (buffer (neat-repl-create-buffer conn)))
     (setq neat-default-connection conn)
