@@ -152,6 +152,75 @@ CALLBACK, if given, fires for each response message."
                 ,@(when sess `((session . ,sess))))))
     (neat-send conn msg callback)))
 
+(defun neat-completions (conn prefix &optional ns callback)
+  "Send a `completions' op on CONN for PREFIX (and optionally NS).
+
+This op is not part of bare nREPL -- it requires `cider-nrepl' or an
+equivalent middleware to be loaded server-side.  CALLBACK, if given,
+fires for each response."
+  (let* ((sess (neat-connection-session conn))
+         (msg `((op . "completions") (prefix . ,prefix)
+                ,@(when ns `((ns . ,ns)))
+                ,@(when sess `((session . ,sess))))))
+    (neat-send conn msg callback)))
+
+(defun neat-lookup (conn sym &optional ns callback)
+  "Send a `lookup' op on CONN for SYM (and optionally NS).
+
+This op is not part of bare nREPL -- it requires `cider-nrepl' or an
+equivalent middleware.  CALLBACK, if given, fires for each response."
+  (let* ((sess (neat-connection-session conn))
+         (msg `((op . "lookup") (sym . ,sym)
+                ,@(when ns `((ns . ,ns)))
+                ,@(when sess `((session . ,sess))))))
+    (neat-send conn msg callback)))
+
+
+;;;; Blocking helpers
+
+;; These wrap the async ops so callers expecting a return value (CAPF,
+;; eldoc) can use them.  They pump `accept-process-output' until the
+;; response arrives or the timeout fires.
+
+(defun neat-client--block-for-done (conn timeout done-p)
+  "Pump CONN's process output until DONE-P returns non-nil.
+Gives up after TIMEOUT seconds."
+  (let ((deadline (+ (float-time) timeout)))
+    (while (and (not (funcall done-p))
+                (< (float-time) deadline))
+      (accept-process-output (neat-connection-process conn) 0.05))))
+
+(defun neat-completions-sync (conn prefix &optional ns timeout)
+  "Block until `completions' for PREFIX (in NS) come back from CONN.
+Returns the list of candidate dicts (typically `(\"candidate\" . \"foo\")
+`(\"type\" . \"function\")' shaped) or nil on timeout.
+TIMEOUT defaults to 1 second."
+  (let (candidates done)
+    (neat-completions
+     conn prefix ns
+     (lambda (resp)
+       (let ((c (neat-bencode-get resp "completions")))
+         (when c (setq candidates (append candidates c))))
+       (when (member "done" (neat-bencode-get resp "status"))
+         (setq done t))))
+    (neat-client--block-for-done conn (or timeout 1) (lambda () done))
+    candidates))
+
+(defun neat-lookup-sync (conn sym &optional ns timeout)
+  "Block until a `lookup' for SYM (in NS) returns from CONN.
+Returns the `info' dict, or nil if absent / on timeout.
+TIMEOUT defaults to 1 second."
+  (let (info done)
+    (neat-lookup
+     conn sym ns
+     (lambda (resp)
+       (let ((i (neat-bencode-get resp "info")))
+         (when i (setq info i)))
+       (when (member "done" (neat-bencode-get resp "status"))
+         (setq done t))))
+    (neat-client--block-for-done conn (or timeout 1) (lambda () done))
+    info))
+
 
 ;;;; Process filter / sentinel
 

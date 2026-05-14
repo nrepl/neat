@@ -14,3 +14,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `neat-repl` module: comint-derived REPL buffer.
 - `neat-mode` minor mode with bindings for source-buffer evaluation.
 - Integration test suite that boots a real nREPL server via the Clojure CLI. Run with `NEAT_INTEGRATION=1 eldev test`.
+- `neat-completions` and `neat-lookup` library ops (plus blocking `*-sync` variants).
+- Completion-at-point and eldoc integration for `neat-mode` source buffers. Both require `cider-nrepl` (or a compatible middleware) on the server side.
+- REPL buffer styling: distinct faces for `out`, `err`, and `value` streams.

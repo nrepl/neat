@@ -139,6 +139,62 @@ with `neat-mode' enabled will use it automatically."
   (neat-interrupt (neat--require-connection)))
 
 
+;;;; Completion-at-point and eldoc
+
+;; These rely on the `completions' and `lookup' ops, which are provided
+;; by cider-nrepl (or compatible) middleware -- bare nREPL does not
+;; support them.  When the server doesn't have the op, the sync helpers
+;; in `neat-client' return nil and we quietly defer to other backends.
+
+(defcustom neat-completion-timeout 1.0
+  "Seconds to wait for a `completions' response before giving up."
+  :type 'number
+  :group 'neat)
+
+(defcustom neat-lookup-timeout 0.3
+  "Seconds to wait for a `lookup' response before giving up.
+Kept short because eldoc fires often and a slow lookup is felt
+immediately."
+  :type 'number
+  :group 'neat)
+
+(defun neat-completion-at-point ()
+  "`completion-at-point-functions' entry for `neat-mode'.
+Asks the server for completions of the symbol at point via the
+`completions' op and returns them as a static candidate list."
+  (let ((bounds (bounds-of-thing-at-point 'symbol)))
+    (when bounds
+      (let* ((conn (neat-current-connection))
+             (start (car bounds))
+             (end (cdr bounds))
+             (prefix (buffer-substring-no-properties start end)))
+        (when (and conn (neat-connection-live-p conn)
+                   (>= (length prefix) 1))
+          (let ((cands (delq nil
+                             (mapcar (lambda (c)
+                                       (neat-bencode-get c "candidate"))
+                                     (neat-completions-sync
+                                      conn prefix nil
+                                      neat-completion-timeout)))))
+            (when cands
+              (list start end cands :exclusive 'no))))))))
+
+(defun neat-eldoc-function ()
+  "Synchronous eldoc backend driven by the `lookup' op."
+  (let ((conn (neat-current-connection))
+        (sym (thing-at-point 'symbol t)))
+    (when (and conn sym (neat-connection-live-p conn))
+      (let* ((info (neat-lookup-sync conn sym nil neat-lookup-timeout))
+             (arglists (and info (neat-bencode-get info "arglists-str")))
+             (doc (and info (neat-bencode-get info "doc")))
+             (first-doc-line (and doc (car (split-string doc "\n")))))
+        (cond
+         ((and arglists first-doc-line)
+          (format "%s: %s" arglists first-doc-line))
+         (arglists arglists)
+         (first-doc-line first-doc-line))))))
+
+
 ;;;; Minor mode
 
 (defvar neat-mode-map
@@ -160,7 +216,16 @@ Bindings:
 \\{neat-mode-map}"
   :lighter " neat"
   :keymap neat-mode-map
-  :group 'neat)
+  :group 'neat
+  (cond
+   (neat-mode
+    (add-hook 'completion-at-point-functions
+              #'neat-completion-at-point nil t)
+    (setq-local eldoc-documentation-function #'neat-eldoc-function))
+   (t
+    (remove-hook 'completion-at-point-functions
+                 #'neat-completion-at-point t)
+    (kill-local-variable 'eldoc-documentation-function))))
 
 (provide 'neat)
 ;;; neat.el ends here

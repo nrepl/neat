@@ -128,6 +128,34 @@
           (expect (neat-bencode-get decoded "code") :to-equal "(+ 1 2)")
           (expect (neat-bencode-get decoded "session") :to-equal "S-1"))))))
 
+(describe "neat-completions"
+  (it "builds a completions op with prefix, ns, and session"
+    (let ((conn (neat-connection--make))
+          sent)
+      (setf (neat-connection-session conn) "S-7")
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-completions conn "foo" "user")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "op") :to-equal "completions")
+          (expect (neat-bencode-get decoded "prefix") :to-equal "foo")
+          (expect (neat-bencode-get decoded "ns") :to-equal "user")
+          (expect (neat-bencode-get decoded "session") :to-equal "S-7"))))))
+
+(describe "neat-lookup"
+  (it "builds a lookup op with sym and ns"
+    (let ((conn (neat-connection--make))
+          sent)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-lookup conn "map" "clojure.core")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "op") :to-equal "lookup")
+          (expect (neat-bencode-get decoded "sym") :to-equal "map")
+          (expect (neat-bencode-get decoded "ns") :to-equal "clojure.core"))))))
+
 (describe "neat-send"
   (it "increments the request id for each call"
     (let ((conn (neat-connection--make))
