@@ -18,3 +18,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Completion-at-point and eldoc integration for `neat-mode` source buffers. Both require `cider-nrepl` (or a compatible middleware) on the server side.
 - REPL buffer styling: distinct faces for `out`, `err`, and `value` streams.
 - `.nrepl-port` discovery: `M-x neat` defaults the port to whatever the nearest port file contains, so in a project with a running server `M-x neat RET RET` is enough. Customize via `neat-port-file-name`; library entry points are `neat-discover-port` and `neat-discover-port-file`.
+- Multi-connection support: `neat-connections` tracks every live `neat-connection`; `neat-set-default-connection` is an interactive picker that switches which one source buffers (running `neat-mode`) talk to. Connections drop out of the registry automatically on disconnect or server death, and the default demotes to the next-most-recent live connection if it goes away.

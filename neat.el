@@ -46,6 +46,38 @@ When non-nil, takes precedence over `neat-default-connection'.")
   "Return the active connection for the current buffer, or nil."
   (or neat-current-connection neat-default-connection))
 
+(defun neat--connection-label (conn)
+  "Return a short, human-readable label for CONN."
+  (let ((sess (neat-connection-session conn)))
+    (format "%s:%d%s"
+            (neat-connection-host conn)
+            (neat-connection-port conn)
+            (if sess
+                (format " [%s]" (substring sess 0 (min 8 (length sess))))
+              ""))))
+
+;;;###autoload
+(defun neat-set-default-connection (conn)
+  "Set CONN as the active `neat-default-connection'.
+
+Interactively, pick from `neat-connections' via `completing-read'.
+Source buffers with `neat-mode' enabled (and no buffer-local
+`neat-current-connection') will route their requests to the new
+default."
+  (interactive
+   (progn
+     (unless neat-connections
+       (user-error "Neat: no live connections; M-x neat to start one"))
+     (let* ((labels (mapcar (lambda (c) (cons (neat--connection-label c) c))
+                            neat-connections))
+            (choice (completing-read "Default connection: "
+                                     (mapcar #'car labels)
+                                     nil t)))
+       (list (cdr (assoc choice labels))))))
+  (setq neat-default-connection conn)
+  (message "Neat: default connection is now %s"
+           (neat--connection-label conn)))
+
 
 ;;;; Port-file discovery
 

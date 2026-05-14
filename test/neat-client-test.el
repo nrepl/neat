@@ -160,6 +160,51 @@
           (expect (neat-bencode-get decoded "sym") :to-equal "map")
           (expect (neat-bencode-get decoded "ns") :to-equal "clojure.core"))))))
 
+(describe "neat-connections registry"
+  ;; These tests use `make-pipe-process' as a stand-in for the real
+  ;; network process: it's alive, supports process-put/get and filter/
+  ;; sentinel hooks, but doesn't actually open a socket.
+  (it "pushes a fresh connection onto neat-connections on connect"
+    (let ((neat-connections nil)
+          (proc (make-pipe-process :name "neat-test-pipe-1" :noquery t)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'open-network-stream)
+                     (lambda (_n _b _h _p &rest _) proc)))
+            (let ((conn (neat-connect "h" 1)))
+              (expect neat-connections :to-equal (list conn))))
+        (when (process-live-p proc) (delete-process proc)))))
+
+  (it "removes the connection on neat-disconnect"
+    (let ((neat-connections nil)
+          (proc (make-pipe-process :name "neat-test-pipe-2" :noquery t)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'open-network-stream)
+                     (lambda (_n _b _h _p &rest _) proc)))
+            (let ((conn (neat-connect "h" 2)))
+              (neat-disconnect conn)
+              (expect neat-connections :to-equal nil)))
+        (when (process-live-p proc) (delete-process proc)))))
+
+  (it "demotes neat-default-connection when its target disconnects"
+    (let ((neat-connections nil)
+          (neat-default-connection nil)
+          (proc-a (make-pipe-process :name "neat-test-pipe-a" :noquery t))
+          (proc-b (make-pipe-process :name "neat-test-pipe-b" :noquery t)))
+      (unwind-protect
+          (let ((stubbed-procs (list proc-a proc-b)))
+            (cl-letf (((symbol-function 'open-network-stream)
+                       (lambda (_n _b _h _p &rest _) (pop stubbed-procs))))
+              (let* ((conn-a (neat-connect "h" 1))
+                     (conn-b (neat-connect "h" 2)))
+                ;; Pretend conn-a is the active default.
+                (setq neat-default-connection conn-a)
+                (neat-disconnect conn-a)
+                ;; conn-a is gone; default should fall through to the
+                ;; next-most-recent live connection, which is conn-b.
+                (expect neat-default-connection :to-be conn-b))))
+        (dolist (p (list proc-a proc-b))
+          (when (process-live-p p) (delete-process p)))))))
+
 (describe "neat-send"
   (it "increments the request id for each call"
     (let ((conn (neat-connection--make))

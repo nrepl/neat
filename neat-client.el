@@ -26,6 +26,18 @@
 (require 'cl-lib)
 (require 'neat-bencode)
 
+(defvar neat-connections nil
+  "List of all currently-tracked `neat-connection's, newest first.
+
+`neat-connect' pushes a fresh connection onto this list and
+`neat-disconnect' (along with the process sentinel on involuntary
+deaths) removes it.  Library consumers and UI code can walk this
+list to enumerate, switch, or shut down live connections.")
+
+;; Forward declaration so neat-client.el can demote
+;; `neat-default-connection' (defined in neat.el) when it dies.
+(defvar neat-default-connection)
+
 (cl-defstruct (neat-connection (:constructor neat-connection--make)
                                 (:copier nil))
   "A connection to an nREPL server.
@@ -52,7 +64,9 @@ Slots:
 
 Returns a `neat-connection'.  The function returns immediately --
 the network process is asynchronous and responses are delivered
-to callbacks registered via `neat-send' and friends."
+to callbacks registered via `neat-send' and friends.  The new
+connection is pushed onto `neat-connections' so it can be found
+later by enumeration or by `neat-set-default-connection'."
   (let* ((conn (neat-connection--make :host host :port port))
          (name (format "neat-nrepl-%s:%d" host port))
          (proc (open-network-stream name nil host port :coding 'binary)))
@@ -61,13 +75,21 @@ to callbacks registered via `neat-send' and friends."
     (set-process-filter proc #'neat-client--filter)
     (set-process-sentinel proc #'neat-client--sentinel)
     (set-process-query-on-exit-flag proc nil)
+    (push conn neat-connections)
     conn))
 
 (defun neat-disconnect (conn)
-  "Close CONN and notify any pending callbacks."
+  "Close CONN and notify any pending callbacks.
+Removes CONN from `neat-connections' and, if it happened to be
+`neat-default-connection', demotes that to the next-most-recent live
+connection (or nil)."
   (let ((proc (neat-connection-process conn)))
     (when (process-live-p proc)
       (delete-process proc)))
+  (setq neat-connections (delq conn neat-connections))
+  (when (and (bound-and-true-p neat-default-connection)
+             (eq neat-default-connection conn))
+    (setq neat-default-connection (car neat-connections)))
   (neat-client--flush-pending conn "disconnected"))
 
 (defun neat-connection-live-p (conn)
@@ -263,10 +285,16 @@ pruned afterwards."
       (remhash id (neat-connection-pending conn)))))
 
 (defun neat-client--sentinel (proc _event)
-  "Sentinel for nREPL connection PROC.  Notify pending callbacks on death."
+  "Sentinel for nREPL connection PROC.
+Drops the connection from `neat-connections', demotes the default if
+needed, and notifies any pending callbacks."
   (unless (process-live-p proc)
     (let ((conn (process-get proc 'neat-connection)))
       (when conn
+        (setq neat-connections (delq conn neat-connections))
+        (when (and (bound-and-true-p neat-default-connection)
+                   (eq neat-default-connection conn))
+          (setq neat-default-connection (car neat-connections)))
         (neat-client--flush-pending conn "connection closed")))))
 
 (defun neat-client--flush-pending (conn reason)
