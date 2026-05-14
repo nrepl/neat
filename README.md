@@ -78,6 +78,15 @@ eldev lint        # lint
 eldev test        # run Buttercup suites
 ```
 
+The default suite is the fast one. There's also an integration suite that
+boots a real nREPL server (via the Clojure CLI) and exercises the full
+client; it's gated behind an env var because the JVM cold start adds a
+few seconds:
+
+```
+NEAT_INTEGRATION=1 eldev test
+```
+
 ## License
 
 Distributed under the GNU General Public License, version 3 or later. See

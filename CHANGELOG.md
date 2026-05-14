@@ -13,3 +13,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `neat-client` module: connection management, request dispatch, and the core nREPL ops (`describe`, `clone`, `eval`, `interrupt`, `close`).
 - `neat-repl` module: comint-derived REPL buffer.
 - `neat-mode` minor mode with bindings for source-buffer evaluation.
+- Integration test suite that boots a real nREPL server via the Clojure CLI. Run with `NEAT_INTEGRATION=1 eldev test`.
