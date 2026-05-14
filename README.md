@@ -51,7 +51,11 @@ M-x neat RET localhost RET 7888 RET
 ```
 
 A `*neat: localhost:7888*` buffer pops up with a prompt. Type an
-expression, hit `RET`, see the result.
+expression, hit `RET`, see the result. Multi-line forms work too --
+`RET` only submits when the input parses as balanced; otherwise it
+inserts a newline so you can finish the form. Input history is
+persisted between sessions in `neat-repl-history-file` and the prompt
+follows the server's reported namespace (`user> `, `myapp.core> `, ...).
 
 To evaluate from a source buffer:
 

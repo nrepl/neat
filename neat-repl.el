@@ -24,8 +24,16 @@
 (require 'neat-bencode)
 (require 'neat-client)
 
-(defcustom neat-repl-prompt "neat> "
-  "Prompt string displayed in the REPL buffer."
+(defcustom neat-repl-prompt-format "%s> "
+  "Format string used to build the REPL prompt.
+The single %s is replaced with the current namespace (see
+`neat-repl--current-ns'), or `neat-repl-default-ns' before the
+server has reported one."
+  :type 'string
+  :group 'neat)
+
+(defcustom neat-repl-default-ns "neat"
+  "Namespace shown in the REPL prompt before the server reports one."
   :type 'string
   :group 'neat)
 
@@ -38,6 +46,24 @@
   "Default port for `neat'."
   :type 'integer
   :group 'neat)
+
+(defcustom neat-repl-history-file
+  (expand-file-name "neat-repl-history" user-emacs-directory)
+  "File where REPL input history is persisted between sessions.
+Set to nil to disable persistence."
+  :type '(choice file (const :tag "Disabled" nil))
+  :group 'neat)
+
+(defcustom neat-repl-history-size 1000
+  "Maximum number of input entries to keep in the REPL history ring."
+  :type 'integer
+  :group 'neat)
+
+(defvar neat-repl-input-syntax-table emacs-lisp-mode-syntax-table
+  "Syntax table used when checking REPL input balance before submit.
+Defaults to Emacs Lisp syntax, which is close enough for the Clojure
+family.  Set to a different syntax table if you're talking to a server
+in a language with very different bracketing rules.")
 
 (defface neat-repl-output
   '((t :inherit shadow))
@@ -57,9 +83,13 @@
 (defvar-local neat-repl-connection nil
   "The `neat-connection' associated with this REPL buffer.")
 
+(defvar-local neat-repl--current-ns nil
+  "Most-recent namespace reported by the server for this buffer.")
+
 (defvar neat-repl-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map comint-mode-map)
+    (define-key map (kbd "RET") #'neat-repl-return)
     (define-key map (kbd "C-c C-c") #'neat-repl-interrupt)
     (define-key map (kbd "C-c C-q") #'neat-repl-quit)
     map)
@@ -67,11 +97,17 @@
 
 (define-derived-mode neat-repl-mode comint-mode "neat-repl"
   "Major mode for an nREPL REPL buffer."
-  (setq-local comint-prompt-regexp (concat "^" (regexp-quote neat-repl-prompt)))
+  ;; A permissive prompt regex so the prompt format can vary with the
+  ;; current namespace.  Matches `<anything-but-newline>> ' at line start.
+  (setq-local comint-prompt-regexp "^[^\n]*?> ")
   (setq-local comint-prompt-read-only t)
   (setq-local comint-input-sender #'neat-repl--input-sender)
   (setq-local comint-use-prompt-regexp nil)
   (setq-local comint-scroll-show-maximum-output t)
+  (when neat-repl-history-file
+    (setq-local comint-input-ring-file-name neat-repl-history-file)
+    (setq-local comint-input-ring-size neat-repl-history-size)
+    (ignore-errors (comint-read-input-ring t)))
   (add-hook 'kill-buffer-hook #'neat-repl--kill-buffer-cleanup nil t))
 
 (defun neat-repl-buffer-name (conn)
@@ -105,11 +141,41 @@ purpose is to satisfy `comint-output-filter' and friends."
                  :coding 'utf-8)))
       (set-marker (process-mark proc) (point-max)))))
 
+(defun neat-repl--prompt ()
+  "Compute the prompt string for the current buffer."
+  (format neat-repl-prompt-format
+          (or neat-repl--current-ns neat-repl-default-ns)))
+
 (defun neat-repl--insert-prompt ()
   "Insert a fresh prompt at the end of the buffer."
   (let ((proc (get-buffer-process (current-buffer))))
     (when proc
-      (comint-output-filter proc neat-repl-prompt))))
+      (comint-output-filter proc (neat-repl--prompt)))))
+
+(defun neat-repl--input-complete-p (input)
+  "Return non-nil if INPUT is a balanced, complete form.
+
+Empty input counts as complete.  Otherwise the string is parsed under
+`neat-repl-input-syntax-table' and we require zero open parens, no
+in-string state, and no in-comment state at end of input."
+  (or (string-empty-p (string-trim input))
+      (with-temp-buffer
+        (set-syntax-table neat-repl-input-syntax-table)
+        (insert input)
+        (let ((state (parse-partial-sexp (point-min) (point-max))))
+          (and (zerop (car state))   ; depth in parens
+               (null (nth 3 state))   ; inside a string
+               (null (nth 4 state)))))))
+
+(defun neat-repl-return ()
+  "Submit the pending REPL input when it is balanced.
+Otherwise insert a newline so the user can keep typing the form."
+  (interactive)
+  (let* ((start (comint-line-beginning-position))
+         (input (buffer-substring-no-properties start (point-max))))
+    (if (neat-repl--input-complete-p input)
+        (comint-send-input)
+      (newline))))
 
 (defun neat-repl--input-sender (_proc input)
   "Eval INPUT on the current REPL buffer's connection."
@@ -136,7 +202,12 @@ purpose is to satisfy `comint-output-filter' and friends."
         (out (neat-bencode-get resp "out"))
         (err (neat-bencode-get resp "err"))
         (ex (neat-bencode-get resp "ex"))
+        (ns (neat-bencode-get resp "ns"))
         (status (neat-bencode-get resp "status")))
+    ;; Track the namespace as soon as we see one so the next prompt
+    ;; reflects any `(in-ns ...)' or namespace-switching form.
+    (when ns
+      (setq neat-repl--current-ns ns))
     (when proc
       (when out
         (comint-output-filter
@@ -151,7 +222,7 @@ purpose is to satisfy `comint-output-filter' and friends."
         (comint-output-filter
          proc (propertize (format "%s\n" ex) 'face 'neat-repl-error)))
       (when (member "done" status)
-        (comint-output-filter proc neat-repl-prompt)))))
+        (comint-output-filter proc (neat-repl--prompt))))))
 
 (defun neat-repl-interrupt ()
   "Send an `interrupt' op to the REPL's connection."
@@ -172,7 +243,9 @@ purpose is to satisfy `comint-output-filter' and friends."
   (bury-buffer))
 
 (defun neat-repl--kill-buffer-cleanup ()
-  "Tear down the connection and pipe process when the REPL buffer dies."
+  "Tear down the connection, persist history, and stop the pipe process."
+  (when comint-input-ring-file-name
+    (ignore-errors (comint-write-input-ring)))
   (when (and neat-repl-connection
              (neat-connection-live-p neat-repl-connection))
     (ignore-errors (neat-disconnect neat-repl-connection)))
