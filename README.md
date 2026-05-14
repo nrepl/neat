@@ -5,10 +5,11 @@
 A small, language-agnostic [nREPL][nrepl] client for Emacs, in the spirit of
 [monroe][monroe].
 
-Where monroe targets Clojure specifically, `neat` aims to work with any
-language that ships a proper nREPL server. It's useful directly (a REPL
-buffer plus a source-buffer minor mode) and also as a library that other
-Emacs packages can build on.
+Where monroe and CIDER target Clojure specifically, `neat` aims to be the
+purest language-agnostic nREPL client in the Emacs world: no Clojure-flavored
+helpers, no hardcoded ops, no assumptions about your project's build tool.
+It's useful directly (a REPL buffer plus a source-buffer minor mode) and
+also as a library that other Emacs packages can build on.
 
 This is an early, experimental project. Expect rough edges.
 
@@ -17,6 +18,61 @@ This is an early, experimental project. Expect rough edges.
 Pre-alpha. The first cut establishes the project skeleton, a bencode
 codec, the wire protocol plumbing, and a basic comint-based REPL. No
 release yet.
+
+## Project context
+
+neat is part of a broader push to make nREPL a healthy multi-language
+ecosystem rather than a Clojure-only protocol. That effort has three
+strands:
+
+1. **An official nREPL specification.** Today the [nREPL][nrepl] project
+   is the de facto spec; a formal version is being drafted at
+   [nrepl/spec.nrepl.org][spec]. neat aims to keep pressure on the spec
+   to stay genuinely language-agnostic by being a client that refuses to
+   silently assume Clojure.
+2. **Reference clients.** A spec without independent client
+   implementations is wishful thinking. neat is one such reference
+   client, intentionally built on Emacs builtins and free of
+   Clojure-specific helpers, so it can act as a baseline for what
+   "compliant" should mean on the client side.
+3. **A compatibility test suite.** The parameterised integration suite
+   under [`test/neat-integration-test.el`](test/neat-integration-test.el)
+   already runs the same assertions against multiple servers (Clojure,
+   Babashka, Basilisp), and divergences between them get surfaced as
+   real findings rather than mysterious bugs. The long-term goal is
+   to grow this into a portable suite any nREPL server can self-check
+   against.
+
+[spec]: https://github.com/nrepl/spec.nrepl.org
+
+## Installation
+
+neat isn't on MELPA yet -- that's an item on the road to 0.1. In the
+meantime, the easiest path is `package-vc-install` on Emacs 29+:
+
+```elisp
+(package-vc-install
+ '(neat :url "https://github.com/nrepl/neat" :branch "main"))
+```
+
+On Emacs 30+ with [`use-package`](https://github.com/jwiegley/use-package):
+
+```elisp
+(use-package neat
+  :vc (:url "https://github.com/nrepl/neat" :branch "main")
+  :commands (neat neat-mode))
+```
+
+For a manual checkout (e.g. while contributing):
+
+```elisp
+(add-to-list 'load-path "/path/to/neat")
+(require 'neat)
+```
+
+`neat-mode` is a minor mode you turn on per source buffer; hook it onto
+whichever languages you actually drive (`clojure-mode`, `fennel-mode`,
+`hy-mode`, ...). The mode itself doesn't assume any specific language.
 
 ## Modules
 
@@ -73,6 +129,12 @@ Bindings:
 | `C-c C-b` | `neat-eval-buffer`     |
 | `C-c C-z` | `neat-switch-to-repl`  |
 | `C-c C-k` | `neat-cancel`          |
+
+## Design
+
+For the rationale behind the architecture -- the module split, the
+async dispatch model, the comint pipe-process trick, why we target
+Emacs 28+, and so on -- see [`doc/design.md`](doc/design.md).
 
 ## Development
 
