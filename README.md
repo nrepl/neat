@@ -81,13 +81,25 @@ eldev test        # run Buttercup suites
 ```
 
 The default suite is the fast one. There's also an integration suite that
-boots a real nREPL server (via the Clojure CLI) and exercises the full
-client; it's gated behind an env var because the JVM cold start adds a
-few seconds:
+boots real nREPL servers as subprocesses and exercises the full client.
+It's gated behind an env var since starting a server adds a few seconds:
 
 ```
 NEAT_INTEGRATION=1 eldev test
 ```
+
+The integration suite walks `neat-it--server-impls` in
+`test/neat-integration-test.el` and registers a block per implementation
+that's installed on PATH. Currently:
+
+| Implementation | Executable | How to install |
+|----------------|------------|----------------|
+| Clojure (`nrepl/nrepl`) | `clojure` | [clojure.org/guides/install_clojure](https://clojure.org/guides/install_clojure) |
+| [Babashka](https://babashka.org) | `bb` | `brew install borkdude/brew/babashka` |
+
+Add more entries to the list to teach the suite about your favorite
+nREPL implementation -- it just needs an executable that prints a port
+banner on stdout.
 
 ## License
 
