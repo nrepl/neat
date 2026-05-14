@@ -1,0 +1,12 @@
+; -*- mode: emacs-lisp; lexical-binding: t -*-
+
+(setf eldev-project-main-file "neat.el")
+
+(eldev-use-package-archive 'gnu-elpa)
+(eldev-use-package-archive 'nongnu-elpa)
+(eldev-use-package-archive 'melpa)
+
+(eldev-use-plugin 'autoloads)
+
+(setf eldev-test-framework 'buttercup)
+(eldev-add-extra-dependencies 'test 'buttercup)
