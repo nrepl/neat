@@ -34,9 +34,22 @@
 deaths) removes it.  Library consumers and UI code can walk this
 list to enumerate, switch, or shut down live connections.")
 
-;; Forward declaration so neat-client.el can demote
-;; `neat-default-connection' (defined in neat.el) when it dies.
-(defvar neat-default-connection)
+(defvar neat-default-connection nil
+  "Global fallback `neat-connection' used when none is set buffer-locally.
+`neat' sets this to the most recently created connection; the
+disconnect path demotes it to the next-most-recent live connection.")
+
+(defvar-local neat-current-connection nil
+  "Per-buffer override for the active `neat-connection'.
+Set automatically in `neat-repl-mode' buffers and available for any
+other buffer that wants explicit routing.  Takes precedence over
+`neat-default-connection'.")
+
+(defun neat-active-connection ()
+  "Return the active connection for the current buffer, or nil.
+Returns `neat-current-connection' when set buffer-locally, else
+falls back to `neat-default-connection'."
+  (or neat-current-connection neat-default-connection))
 
 (cl-defstruct (neat-connection (:constructor neat-connection--make)
                                 (:copier nil))
@@ -87,8 +100,7 @@ connection (or nil)."
     (when (process-live-p proc)
       (delete-process proc)))
   (setq neat-connections (delq conn neat-connections))
-  (when (and (bound-and-true-p neat-default-connection)
-             (eq neat-default-connection conn))
+  (when (eq neat-default-connection conn)
     (setq neat-default-connection (car neat-connections)))
   (neat-client--flush-pending conn "disconnected"))
 
@@ -292,8 +304,7 @@ needed, and notifies any pending callbacks."
     (let ((conn (process-get proc 'neat-connection)))
       (when conn
         (setq neat-connections (delq conn neat-connections))
-        (when (and (bound-and-true-p neat-default-connection)
-                   (eq neat-default-connection conn))
+        (when (eq neat-default-connection conn)
           (setq neat-default-connection (car neat-connections)))
         (neat-client--flush-pending conn "connection closed")))))
 

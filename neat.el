@@ -34,18 +34,6 @@
 
 ;;;; Active connection
 
-(defvar neat-default-connection nil
-  "Global fallback `neat-connection' used when none is set buffer-locally.
-`neat' sets this to the most recently created connection.")
-
-(defvar-local neat-current-connection nil
-  "Per-buffer override for the active `neat-connection'.
-When non-nil, takes precedence over `neat-default-connection'.")
-
-(defun neat-active-connection ()
-  "Return the active connection for the current buffer, or nil."
-  (or neat-current-connection neat-default-connection))
-
 (defun neat--connection-label (conn)
   "Return a short, human-readable label for CONN."
   (let ((sess (neat-connection-session conn)))

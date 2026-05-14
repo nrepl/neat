@@ -80,11 +80,13 @@ in a language with very different bracketing rules.")
   "Face for `value' lines produced by an eval."
   :group 'neat)
 
-(defvar-local neat-repl-connection nil
-  "The `neat-connection' associated with this REPL buffer.")
-
 (defvar-local neat-repl--current-ns nil
   "Most-recent namespace reported by the server for this buffer.")
+
+;; Forward declarations so neat-repl-mode can hook these without
+;; requiring neat.el (which depends on neat-repl.el, not the other way).
+(declare-function neat-completion-at-point "neat" ())
+(declare-function neat-eldoc-function "neat" (callback &rest _ignored))
 
 (defvar neat-repl-mode-map
   (let ((map (make-sparse-keymap)))
@@ -108,6 +110,13 @@ in a language with very different bracketing rules.")
     (setq-local comint-input-ring-file-name neat-repl-history-file)
     (setq-local comint-input-ring-size neat-repl-history-size)
     (ignore-errors (comint-read-input-ring t)))
+  ;; Same backends `neat-mode' uses in source buffers.  They route via
+  ;; `neat-active-connection', which sees this buffer's
+  ;; `neat-current-connection' first.
+  (add-hook 'completion-at-point-functions
+            #'neat-completion-at-point nil t)
+  (add-hook 'eldoc-documentation-functions
+            #'neat-eldoc-function nil t)
   (add-hook 'kill-buffer-hook #'neat-repl--kill-buffer-cleanup nil t))
 
 (defun neat-repl-buffer-name (conn)
@@ -126,7 +135,7 @@ in a language with very different bracketing rules.")
     (with-current-buffer buffer
       (neat-repl--ensure-pipe-process)
       (neat-repl-mode)
-      (setq neat-repl-connection conn))
+      (setq neat-current-connection conn))
     buffer))
 
 (defun neat-repl--ensure-pipe-process ()
@@ -180,7 +189,7 @@ Otherwise insert a newline so the user can keep typing the form."
 (defun neat-repl--input-sender (_proc input)
   "Eval INPUT on the current REPL buffer's connection."
   (let* ((buffer (current-buffer))
-         (conn neat-repl-connection)
+         (conn neat-current-connection)
          (trimmed (string-trim-right input)))
     (cond
      ((not conn)
@@ -227,16 +236,16 @@ Otherwise insert a newline so the user can keep typing the form."
 (defun neat-repl-interrupt ()
   "Send an `interrupt' op to the REPL's connection."
   (interactive)
-  (if neat-repl-connection
-      (neat-interrupt neat-repl-connection)
+  (if neat-current-connection
+      (neat-interrupt neat-current-connection)
     (user-error "Neat: no connection in this buffer")))
 
 (defun neat-repl-quit ()
   "Disconnect from the nREPL server and bury this buffer."
   (interactive)
-  (when neat-repl-connection
-    (neat-disconnect neat-repl-connection)
-    (setq neat-repl-connection nil))
+  (when neat-current-connection
+    (neat-disconnect neat-current-connection)
+    (setq neat-current-connection nil))
   (let ((proc (get-buffer-process (current-buffer))))
     (when (process-live-p proc)
       (delete-process proc)))
@@ -246,9 +255,9 @@ Otherwise insert a newline so the user can keep typing the form."
   "Tear down the connection, persist history, and stop the pipe process."
   (when comint-input-ring-file-name
     (ignore-errors (comint-write-input-ring)))
-  (when (and neat-repl-connection
-             (neat-connection-live-p neat-repl-connection))
-    (ignore-errors (neat-disconnect neat-repl-connection)))
+  (when (and neat-current-connection
+             (neat-connection-live-p neat-current-connection))
+    (ignore-errors (neat-disconnect neat-current-connection)))
   (let ((proc (get-buffer-process (current-buffer))))
     (when (process-live-p proc)
       (delete-process proc))))
