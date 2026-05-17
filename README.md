@@ -185,6 +185,21 @@ Add more entries to the list to teach the suite about your favorite
 nREPL implementation. It just needs an executable that prints a port
 banner on stdout.
 
+### Debugging the wire
+
+When something goes wrong (eldoc not firing, an op returning a surprise
+shape, ...) the quickest way to find out is to mirror every nREPL
+message neat exchanges with the server:
+
+```
+M-x neat-toggle-message-log
+```
+
+Both directions land pretty-printed in `*neat-messages*`, prefixed with
+`-->` (request) or `<--` (response). Customize the buffer name via
+`neat-message-log-buffer-name`; permanently enable with
+`(setq neat-log-messages t)`.
+
 ## License
 
 Distributed under the GNU General Public License, version 3 or later. See

@@ -109,6 +109,44 @@ connection (or nil)."
   (and conn (process-live-p (neat-connection-process conn))))
 
 
+;;;; Message logging
+
+(defcustom neat-log-messages nil
+  "Non-nil to mirror every nREPL message to `neat-message-log-buffer-name'.
+Handy for debugging client/server interactions.  Toggle interactively
+with `neat-toggle-message-log'."
+  :type 'boolean
+  :group 'neat)
+
+(defcustom neat-message-log-buffer-name "*neat-messages*"
+  "Name of the buffer used by `neat-log-messages'."
+  :type 'string
+  :group 'neat)
+
+(defun neat-toggle-message-log ()
+  "Toggle `neat-log-messages' and pop to the log buffer when enabling."
+  (interactive)
+  (setq neat-log-messages (not neat-log-messages))
+  (message "neat: message log %s" (if neat-log-messages "enabled" "disabled"))
+  (when neat-log-messages
+    (display-buffer (get-buffer-create neat-message-log-buffer-name))))
+
+(defun neat-client--log (conn direction message)
+  "Append MESSAGE for CONN to the log buffer.
+DIRECTION is `:out' for outgoing requests, `:in' for incoming
+responses.  No-op unless `neat-log-messages' is non-nil."
+  (when neat-log-messages
+    (with-current-buffer (get-buffer-create neat-message-log-buffer-name)
+      (goto-char (point-max))
+      (insert (format "%s %s %s:%d\n"
+                      (if (eq direction :out) "-->" "<--")
+                      (format-time-string "%H:%M:%S.%3N")
+                      (neat-connection-host conn)
+                      (neat-connection-port conn)))
+      (pp message (current-buffer))
+      (insert "\n"))))
+
+
 ;;;; Sending requests
 
 (defun neat-send (conn message &optional callback)
@@ -128,6 +166,7 @@ Returns the assigned id (a string)."
          (with-id (cons (cons "id" id) message)))
     (when callback
       (puthash id callback (neat-connection-pending conn)))
+    (neat-client--log conn :out with-id)
     (process-send-string (neat-connection-process conn)
                          (neat-bencode-encode with-id))
     id))
@@ -280,6 +319,7 @@ bencode messages as it can."
 
 When the response's status contains `done' the callback entry is
 pruned afterwards."
+  (neat-client--log conn :in message)
   (let* ((id (neat-bencode-get message "id"))
          (status (neat-bencode-get message "status"))
          (callback (and id (gethash id (neat-connection-pending conn)))))
