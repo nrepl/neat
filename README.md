@@ -63,6 +63,21 @@ On Emacs 30+ with [`use-package`](https://github.com/jwiegley/use-package):
   :commands (neat neat-mode))
 ```
 
+With [`straight.el`](https://github.com/radian-software/straight.el):
+
+```elisp
+(straight-use-package
+ '(neat :type git :host github :repo "nrepl/neat"))
+```
+
+Or combined with `use-package`:
+
+```elisp
+(use-package neat
+  :straight (neat :type git :host github :repo "nrepl/neat")
+  :commands (neat neat-mode))
+```
+
 For a manual checkout (e.g. while contributing):
 
 ```elisp
