@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `neat-mode` minor mode with bindings for source-buffer evaluation.
 - Integration test suite that boots a real nREPL server via the Clojure CLI. Run with `NEAT_INTEGRATION=1 eldev test`.
 - `neat-completions` and `neat-lookup` library ops (plus blocking `*-sync` variants).
-- Completion-at-point and eldoc integration for `neat-mode` source buffers. Both require `cider-nrepl` (or a compatible middleware) on the server side.
+- Completion-at-point and eldoc integration for `neat-mode` source buffers, driven by the standard `completions` and `lookup` nREPL ops.
 - REPL buffer styling: distinct faces for `out`, `err`, and `value` streams.
 - `.nrepl-port` discovery: `M-x neat` defaults the port to whatever the nearest port file contains, so in a project with a running server `M-x neat RET RET` is enough. Customize via `neat-port-file-name`; library entry points are `neat-discover-port` and `neat-discover-port-file`.
 - Multi-connection support: `neat-connections` tracks every live `neat-connection`; `neat-set-default-connection` is an interactive picker that switches which one source buffers (running `neat-mode`) talk to. Connections drop out of the registry automatically on disconnect or server death, and the default demotes to the next-most-recent live connection if it goes away.

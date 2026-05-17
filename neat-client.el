@@ -188,10 +188,8 @@ CALLBACK, if given, fires for each response message."
 
 (defun neat-completions (conn prefix &optional ns callback)
   "Send a `completions' op on CONN for PREFIX (and optionally NS).
-
-This op is not part of bare nREPL -- it requires `cider-nrepl' or an
-equivalent middleware to be loaded server-side.  CALLBACK, if given,
-fires for each response."
+Servers that don't implement the op return an `unknown-op' status.
+CALLBACK, if given, fires for each response."
   (let* ((sess (neat-connection-session conn))
          (msg `((op . "completions") (prefix . ,prefix)
                 ,@(when ns `((ns . ,ns)))
@@ -200,9 +198,8 @@ fires for each response."
 
 (defun neat-lookup (conn sym &optional ns callback)
   "Send a `lookup' op on CONN for SYM (and optionally NS).
-
-This op is not part of bare nREPL -- it requires `cider-nrepl' or an
-equivalent middleware.  CALLBACK, if given, fires for each response."
+Servers that don't implement the op return an `unknown-op' status.
+CALLBACK, if given, fires for each response."
   (let* ((sess (neat-connection-session conn))
          (msg `((op . "lookup") (sym . ,sym)
                 ,@(when ns `((ns . ,ns)))

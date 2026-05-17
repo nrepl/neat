@@ -197,10 +197,10 @@ with `neat-mode' enabled will use it automatically."
 
 ;;;; Completion-at-point and eldoc
 
-;; These rely on the `completions' and `lookup' ops, which are provided
-;; by cider-nrepl (or compatible) middleware -- bare nREPL does not
-;; support them.  When the server doesn't have the op, the sync helpers
-;; in `neat-client' return nil and we quietly defer to other backends.
+;; These rely on the standard `completions' and `lookup' nREPL ops.
+;; Servers that don't implement them surface as `unknown-op' status
+;; responses, the sync helpers return nil, and we quietly defer to
+;; other backends.
 
 (defcustom neat-completion-timeout 1.0
   "Seconds to wait for a `completions' response before giving up."

@@ -42,8 +42,8 @@ consume just the parts they need.
   other module dependencies.
 - `neat-client.el`: TCP connection, request dispatch, the standard
   nREPL ops (`describe`, `clone`, `eval`, `interrupt`, `close`,
-  plus middleware-optional `completions` and `lookup`). Depends only
-  on `neat-bencode`. UI-agnostic.
+  `completions`, `lookup`). Depends only on `neat-bencode`.
+  UI-agnostic.
 - `neat-repl.el`: comint-derived REPL buffer. Depends on
   `neat-client`.
 - `neat.el`: entry point, customisation group, `neat-mode` minor
@@ -96,16 +96,13 @@ that pattern.
 
 ### Op discovery via `describe`, no hardcoded Clojurisms
 
-Bare nREPL is small: `clone`, `close`, `describe`, `eval`, `interrupt`,
-`ls-sessions`, `stdin`. Richer features (`completions`, `lookup`,
-`eldoc`, `load-file`, ...) come from middleware like `cider-nrepl`,
-or are implementation-specific.
-
-neat sends `describe` on connect and stashes the response on the
-connection. CAPF and eldoc backends silently no-op when the relevant
-op is missing from the server. There are no hardcoded `clojure.repl/doc`
-forms, no assumption the server runs on a JVM, no Leiningen or
-Clojure CLI defaults baked into the connect command.
+nREPL is a protocol; servers advertise the ops they implement via the
+`describe` op. neat sends `describe` on connect and stashes the response
+on the connection. UI-level features like CAPF and eldoc consult that
+capability map and silently no-op when the op they need is missing.
+There are no hardcoded `clojure.repl/doc` forms, no assumption the
+server runs on a JVM, no Leiningen or Clojure CLI defaults baked into
+the connect command.
 
 This is what "language-agnostic" actually means in practice: the
 client doesn't carry the receiving language inside it.
