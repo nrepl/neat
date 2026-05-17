@@ -2,14 +2,16 @@
 
 [![CI](https://github.com/nrepl/neat/actions/workflows/ci.yml/badge.svg)](https://github.com/nrepl/neat/actions/workflows/ci.yml)
 
-A small, language-agnostic [nREPL][nrepl] client for Emacs, in the spirit of
-[monroe][monroe].
+> I take my REPL neat
+> My coffee black and my bed at three
 
-Where monroe and CIDER target Clojure specifically, `neat` aims to be the
-purest language-agnostic nREPL client in the Emacs world: no Clojure-flavored
-helpers, no hardcoded ops, no assumptions about your project's build tool.
-It's useful directly (a REPL buffer plus a source-buffer minor mode) and
-also as a library that other Emacs packages can build on.
+A small, language-agnostic [nREPL][nrepl] client for Emacs.
+
+Where other nREPL clients (e.g. [monroe][] and CIDER) target Clojure specifically,
+`neat` aims to be the purest language-agnostic nREPL client in the Emacs world:
+no Clojure-flavored helpers, no hardcoded ops, no assumptions about your
+project's build tool.  It's useful directly (a REPL buffer plus a source-buffer
+minor mode) and also as a library that other Emacs packages can build on.
 
 This is an early, experimental project. Expect rough edges.
 
@@ -21,17 +23,17 @@ release yet.
 
 ## Project context
 
-neat is part of a broader push to make nREPL a healthy multi-language
+`neat` is part of a broader push to make nREPL a healthy multi-language
 ecosystem rather than a Clojure-only protocol. That effort has three
 strands:
 
 1. **An official nREPL specification.** Today the [nREPL][nrepl] project
    is the de facto spec; a formal version is being drafted at
-   [nrepl/spec.nrepl.org][spec]. neat aims to keep pressure on the spec
+   [nrepl/spec.nrepl.org][spec]. `neat` aims to keep pressure on the spec
    to stay genuinely language-agnostic by being a client that refuses to
    silently assume Clojure.
 2. **Reference clients.** A spec without independent client
-   implementations is wishful thinking. neat is one such reference
+   implementations is wishful thinking. `neat` is one such reference
    client, intentionally built on Emacs builtins and free of
    Clojure-specific helpers, so it can act as a baseline for what
    "compliant" should mean on the client side.
@@ -47,7 +49,7 @@ strands:
 
 ## Installation
 
-neat isn't on MELPA yet - that's an item on the road to 0.1. In the
+`neat` isn't on MELPA yet - that's an item on the road to 0.1. In the
 meantime, the easiest path is `package-vc-install` on Emacs 29+:
 
 ```elisp
