@@ -189,7 +189,7 @@ with `neat-mode' enabled will use it automatically."
         (pop-to-buffer buf)
       (user-error "Neat: no REPL buffer for this connection"))))
 
-(defun neat-cancel ()
+(defun neat-interrupt-eval ()
   "Interrupt the in-flight eval on the active connection."
   (interactive)
   (neat-interrupt (neat--require-connection)))
@@ -269,7 +269,7 @@ output -- acceptable trade-off for not blocking the editor."
     (define-key map (kbd "C-c C-r") #'neat-eval-region)
     (define-key map (kbd "C-c C-b") #'neat-eval-buffer)
     (define-key map (kbd "C-c C-z") #'neat-switch-to-repl)
-    (define-key map (kbd "C-c C-k") #'neat-cancel)
+    (define-key map (kbd "C-c C-k") #'neat-interrupt-eval)
     map)
   "Keymap for `neat-mode'.")
 

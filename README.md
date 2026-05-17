@@ -145,7 +145,7 @@ Bindings:
 | `C-c C-r` | `neat-eval-region`     |
 | `C-c C-b` | `neat-eval-buffer`     |
 | `C-c C-z` | `neat-switch-to-repl`  |
-| `C-c C-k` | `neat-cancel`          |
+| `C-c C-k` | `neat-interrupt-eval`  |
 
 ## Design
 
