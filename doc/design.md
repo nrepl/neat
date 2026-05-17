@@ -38,15 +38,15 @@ just want to use neat, the [README](../README.md) is enough.
 This keeps the library/UI boundary visible and lets downstream packages
 consume just the parts they need.
 
-- `neat-bencode.el` -- wire format codec. Pure functions, no I/O, no
+- `neat-bencode.el`: wire format codec. Pure functions, no I/O, no
   other module dependencies.
-- `neat-client.el` -- TCP connection, request dispatch, the standard
+- `neat-client.el`: TCP connection, request dispatch, the standard
   nREPL ops (`describe`, `clone`, `eval`, `interrupt`, `close`,
   plus middleware-optional `completions` and `lookup`). Depends only
   on `neat-bencode`. UI-agnostic.
-- `neat-repl.el` -- comint-derived REPL buffer. Depends on
+- `neat-repl.el`: comint-derived REPL buffer. Depends on
   `neat-client`.
-- `neat.el` -- entry point, customisation group, `neat-mode` minor
+- `neat.el`: entry point, customisation group, `neat-mode` minor
   mode, source-buffer evaluation commands, CAPF and eldoc backends.
   The "everything plugged together" file.
 
@@ -115,7 +115,7 @@ client doesn't carry the receiving language inside it.
 The REPL buffer derives from `comint-mode` because `comint` is the
 well-trodden Emacs pattern for "buffer with prompt, input history,
 streaming output". But comint expects an actual subprocess attached
-to the buffer. We don't have one -- our "process" is the nREPL TCP
+to the buffer. We don't have one. Our "process" is the nREPL TCP
 connection, which lives outside the buffer.
 
 The workaround: attach an idle `make-pipe-process` to the comint
@@ -179,10 +179,10 @@ is on PATH. Today: Clojure (`nrepl/nrepl`), Babashka, Basilisp.
 
 This isn't just nice-to-have; it's a first step toward a real nREPL
 compatibility test suite. The contract under test is what we believe
-any conformant server should support, and concrete divergences --
-for example, Basilisp chunking `(println "hi")` into two `out`
-messages where Clojure batches them into `"hi\n"` -- are exactly the
-findings that should feed back into the nREPL specification work.
+any conformant server should support, and concrete divergences (for
+example, Basilisp chunking `(println "hi")` into two `out` messages
+where Clojure batches them into `"hi\n"`) are exactly the findings
+that should feed back into the nREPL specification work.
 
 Adding a new implementation is a single plist entry in
 `neat-it--server-impls`: name, executable, command builder, and a

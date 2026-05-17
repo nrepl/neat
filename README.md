@@ -47,7 +47,7 @@ strands:
 
 ## Installation
 
-neat isn't on MELPA yet -- that's an item on the road to 0.1. In the
+neat isn't on MELPA yet - that's an item on the road to 0.1. In the
 meantime, the easiest path is `package-vc-install` on Emacs 29+:
 
 ```elisp
@@ -122,7 +122,7 @@ M-x neat RET localhost RET 7888 RET
 ```
 
 A `*neat: localhost:7888*` buffer pops up with a prompt. Type an
-expression, hit `RET`, see the result. Multi-line forms work too --
+expression, hit `RET`, see the result. Multi-line forms work too:
 `RET` only submits when the input parses as balanced; otherwise it
 inserts a newline so you can finish the form. Input history is
 persisted between sessions in `neat-repl-history-file` and the prompt
@@ -147,9 +147,9 @@ Bindings:
 
 ## Design
 
-For the rationale behind the architecture -- the module split, the
+For the rationale behind the architecture (the module split, the
 async dispatch model, the comint pipe-process trick, why we target
-Emacs 28+, and so on -- see [`doc/design.md`](doc/design.md).
+Emacs 28+, and so on) see [`doc/design.md`](doc/design.md).
 
 ## Development
 
@@ -180,7 +180,7 @@ that's installed on PATH. Currently:
 | [Basilisp](https://basilisp.readthedocs.io) (Python) | `basilisp` | `pipx install basilisp` |
 
 Add more entries to the list to teach the suite about your favorite
-nREPL implementation -- it just needs an executable that prints a port
+nREPL implementation. It just needs an executable that prints a port
 banner on stdout.
 
 ## License
