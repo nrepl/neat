@@ -190,7 +190,7 @@ Otherwise insert a newline so the user can keep typing the form."
   "Eval INPUT on the current REPL buffer's connection."
   (let* ((buffer (current-buffer))
          (conn neat-current-connection)
-         (trimmed (string-trim-right input)))
+         (trimmed (string-trim-right (substring-no-properties input))))
     (cond
      ((not conn)
       (message "Neat: no connection in this buffer"))
