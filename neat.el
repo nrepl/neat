@@ -239,6 +239,20 @@ Asks the server for completions of the symbol at point via the
      (arglists arglists)
      (first-doc-line first-doc-line))))
 
+(defun neat--eldoc-thing-at-point ()
+  "Return the symbol eldoc should look up around point, or nil.
+Prefers the symbol at point; if there isn't one (point is in
+whitespace inside a form, e.g. `(str |)') falls back to the head of
+the enclosing list, so eldoc shows the arglist for the call being
+constructed.  Walks outward as far as needed, which gives sensible
+results in nested calls: from `(str (sub |))' you get `sub'."
+  (or (thing-at-point 'symbol t)
+      (save-excursion
+        (ignore-errors
+          (backward-up-list)
+          (down-list)
+          (thing-at-point 'symbol t)))))
+
 (defun neat-eldoc-function (callback &rest _ignored)
   "Eldoc backend driven by the `lookup' op.
 
@@ -248,7 +262,7 @@ never blocks waiting on a lookup.  When the user has moved point
 by the time the response arrives, eldoc may briefly show stale
 output -- acceptable trade-off for not blocking the editor."
   (let ((conn (neat-active-connection))
-        (sym (thing-at-point 'symbol t)))
+        (sym (neat--eldoc-thing-at-point)))
     (when (and conn sym (neat-connection-live-p conn))
       (neat-lookup
        conn sym nil
