@@ -228,17 +228,6 @@ Asks the server for completions of the symbol at point via the
             (when cands
               (list start end cands :exclusive 'no))))))))
 
-(defun neat--eldoc-format (info)
-  "Pick the displayable string from a `lookup' INFO dict, or return nil."
-  (let* ((arglists (neat-bencode-get info "arglists-str"))
-         (doc (neat-bencode-get info "doc"))
-         (first-doc-line (and doc (car (split-string doc "\n")))))
-    (cond
-     ((and arglists first-doc-line)
-      (format "%s: %s" arglists first-doc-line))
-     (arglists arglists)
-     (first-doc-line first-doc-line))))
-
 (defun neat--eldoc-thing-at-point ()
   "Return the symbol eldoc should look up around point, or nil.
 Prefers the symbol at point; if there isn't one (point is in
@@ -253,6 +242,119 @@ results in nested calls: from `(str (sub |))' you get `sub'."
           (down-list)
           (thing-at-point 'symbol t)))))
 
+(defun neat--current-arg-index ()
+  "Return the 0-indexed arg position at point in the enclosing call.
+nil if there's no enclosing call (top-level point).  Drives the
+arg-highlight in `neat-eldoc-format-lispy-arglist'.  Uses
+`forward-sexp', so it follows the buffer's syntax table and works
+for any Lisp-flavored major mode."
+  (save-excursion
+    (let ((origin (point)))
+      (when (ignore-errors (backward-up-list) t)
+        (forward-char 1)
+        (when (ignore-errors (forward-sexp 1) t)   ; past the head
+          (let ((idx 0))
+            (while (let ((before (point)))
+                     (and (ignore-errors (forward-sexp 1) t)
+                          (> (point) before)
+                          (<= (point) origin)))
+              (cl-incf idx))
+            idx))))))
+
+(defun neat--lispy-parse-arglist (arglist-str)
+  "Parse a Clojure/Lisp-shape ARGLIST-STR into a list of arities.
+Each arity is a list of param tokens (strings); `&' is kept as its
+own token.  Returns nil if parsing fails (e.g. destructuring forms
+containing maps), in which case the caller should fall back to the
+raw string."
+  (ignore-errors
+    (let* ((s (replace-regexp-in-string "\\[" "(" arglist-str))
+           (s (replace-regexp-in-string "\\]" ")" s))
+           (form (car (read-from-string s))))
+      (cond
+       ;; `[]' -> nil; treat as a single empty arity.
+       ((null form) '(()))
+       ;; `([] [x] ...)' -> every element is a list (nil counts).
+       ((cl-every #'listp form)
+        (mapcar (lambda (a) (mapcar #'symbol-name a)) form))
+       ;; `[f coll]' -> flat list of symbols.
+       ((consp form)
+        (list (mapcar #'symbol-name form)))))))
+
+(defun neat--pick-arity (arities arg-index)
+  "Return the arity in ARITIES that best matches ARG-INDEX, or nil."
+  (cl-find-if
+   (lambda (arity)
+     (let ((amp (cl-position "&" arity :test #'equal)))
+       (if amp
+           (>= arg-index amp)
+         (< arg-index (length arity)))))
+   arities))
+
+(defun neat--render-arity (arity highlight-pos)
+  "Render ARITY as `[a b c]', wrapping the param at HIGHLIGHT-POS in a face.
+HIGHLIGHT-POS of -1 disables highlighting."
+  (let ((i 0))
+    (concat "["
+            (mapconcat
+             (lambda (p)
+               (prog1
+                   (if (= i highlight-pos)
+                       (propertize p 'face
+                                   'eldoc-highlight-function-argument)
+                     p)
+                 (cl-incf i)))
+             arity " ")
+            "]")))
+
+(defun neat--lispy-highlight-arglist (arglist-str arg-index)
+  "Return ARGLIST-STR with the param at ARG-INDEX highlighted.
+Falls back to the original string when parsing fails or no arity
+fits ARG-INDEX (e.g. user has typed more args than any arity takes)."
+  (or (when (and arglist-str arg-index)
+        (let ((arities (neat--lispy-parse-arglist arglist-str)))
+          (when arities
+            (let ((chosen (neat--pick-arity arities arg-index)))
+              (when chosen
+                (let* ((amp (cl-position "&" chosen :test #'equal))
+                       (hi (cond
+                            ((and amp (>= arg-index amp)) (1+ amp))
+                            (t (min arg-index (1- (length chosen))))))
+                       (parts (mapcar
+                               (lambda (a)
+                                 (neat--render-arity
+                                  a (if (eq a chosen) hi -1)))
+                               arities)))
+                  (if (= (length arities) 1)
+                      (car parts)
+                    (concat "(" (mapconcat #'identity parts " ") ")"))))))))
+      arglist-str))
+
+(defun neat-eldoc-format-lispy-arglist (info arg-index)
+  "Default `neat-eldoc-arglist-formatter'.
+Formats INFO's `arglists-str' and `doc' for eldoc display, with the
+param at ARG-INDEX highlighted when given."
+  (let* ((arglist (neat-bencode-get info "arglists-str"))
+         (styled (neat--lispy-highlight-arglist arglist arg-index))
+         (doc (neat-bencode-get info "doc"))
+         (first-doc-line (and doc (car (split-string doc "\n")))))
+    (cond
+     ((and styled first-doc-line) (format "%s: %s" styled first-doc-line))
+     (styled styled)
+     (first-doc-line first-doc-line))))
+
+(defvar neat-eldoc-arg-index-function #'neat--current-arg-index
+  "Function returning the 0-indexed arg position at point, or nil.
+Called with no arguments.  Default works for any Lisp-flavored
+major mode via `forward-sexp'; replace for languages where argument
+boundaries aren't sexps (e.g. Python commas).")
+
+(defvar neat-eldoc-arglist-formatter #'neat-eldoc-format-lispy-arglist
+  "Function (INFO ARG-INDEX) -> string, or nil for no display.
+Produces the eldoc display string from a `lookup' INFO dict.  The
+default understands Clojure/Lisp-shape arglists `[a b & rest]';
+override for servers that report arglists in a different syntax.")
+
 (defun neat-eldoc-function (callback &rest _ignored)
   "Eldoc backend driven by the `lookup' op.
 
@@ -262,13 +364,15 @@ never blocks waiting on a lookup.  When the user has moved point
 by the time the response arrives, eldoc may briefly show stale
 output -- acceptable trade-off for not blocking the editor."
   (let ((conn (neat-active-connection))
-        (sym (neat--eldoc-thing-at-point)))
+        (sym (neat--eldoc-thing-at-point))
+        (arg-index (funcall neat-eldoc-arg-index-function)))
     (when (and conn sym (neat-connection-live-p conn))
       (neat-lookup
        conn sym nil
        (lambda (resp)
          (when-let* ((info (neat-bencode-get resp "info"))
-                     (str (neat--eldoc-format info)))
+                     (str (funcall neat-eldoc-arglist-formatter
+                                   info arg-index)))
            (funcall callback str :thing sym))))
       ;; Tell eldoc we'll call the callback asynchronously.
       t)))

@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - REPL: input history persistence. New `neat-repl-history-file` defaults to `~/.emacs.d/neat-repl-history`; history is loaded on REPL start and saved on buffer kill. Set to nil to disable.
 - REPL: namespace-aware prompt. The prompt is now derived from `neat-repl-prompt-format` (default `"%s> "`) and updates in response to the server's `ns` field, so `user> ` becomes `myapp.core> ` after `(in-ns 'myapp.core)`. `neat-repl-default-ns` controls what appears before the server has reported one.
 - REPL: completion-at-point and eldoc are now also active in the REPL buffer, not just in source buffers running `neat-mode`. Same backends, same caveats (server must implement `completions` / `lookup`).
+- Eldoc highlights the current argument in the displayed arglist. When point sits inside a call like `(map f |coll)`, the param matching the cursor position is wrapped in `eldoc-highlight-function-argument`. Multi-arity arglists pick whichever arity fits the current arg count; variadic arities highlight the rest param once you're past the fixed slots. Two seams keep this language-agnostic: `neat-eldoc-arg-index-function` (defaults to a `forward-sexp`-based walk) and `neat-eldoc-arglist-formatter` (defaults to a Clojure-shape `[a b & rest]` parser). Destructuring forms containing maps fall back to the unhighlighted arglist.
 
 ### Changed
 
