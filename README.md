@@ -147,6 +147,8 @@ Bindings:
 | `C-c C-l` | `neat-load-buffer-file` |
 | `C-c C-z` | `neat-switch-to-repl`  |
 | `C-c C-k` | `neat-interrupt-eval`  |
+| `M-.`     | `xref-find-definitions` |
+| `M-,`     | `xref-go-back`         |
 
 `neat-eval-buffer` ships the buffer contents as an `eval` op (each form
 evaluated in turn, every value streamed back). `neat-load-buffer-file`
@@ -155,6 +157,13 @@ so the server can attribute file and line numbers to errors. Use it
 when you're loading an actual file from disk and care about good
 diagnostics; use `neat-eval-buffer` when you're scratching around in
 a buffer that may not even be on disk.
+
+`M-.` is plain `xref-find-definitions`. `neat-mode` registers an xref
+backend that asks the server's `lookup` op where the symbol at point
+is defined and jumps there. `M-,` pops back through the standard
+xref stack. Sources behind URLs we can't resolve locally (`jar:...`,
+`http:...`, ...) yield no result; we don't try to extract files from
+jars.
 
 ## Design
 

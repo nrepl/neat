@@ -87,6 +87,7 @@ in a language with very different bracketing rules.")
 ;; requiring neat.el (which depends on neat-repl.el, not the other way).
 (declare-function neat-completion-at-point "neat" ())
 (declare-function neat-eldoc-function "neat" (callback &rest _ignored))
+(declare-function neat--xref-backend "neat" ())
 
 (defvar neat-repl-mode-map
   (let ((map (make-sparse-keymap)))
@@ -117,6 +118,8 @@ in a language with very different bracketing rules.")
             #'neat-completion-at-point nil t)
   (add-hook 'eldoc-documentation-functions
             #'neat-eldoc-function nil t)
+  (add-hook 'xref-backend-functions
+            #'neat--xref-backend nil t)
   (add-hook 'kill-buffer-hook #'neat-repl--kill-buffer-cleanup nil t))
 
 (defun neat-repl-buffer-name (conn)

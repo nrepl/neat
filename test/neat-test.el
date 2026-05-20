@@ -168,5 +168,55 @@ POS is a 1-indexed buffer position."
       (expect (nth 4 args) :to-be nil)
       (expect (nth 5 args) :to-be nil))))
 
+(describe "neat--lookup-file-path"
+  (it "returns plain paths unchanged"
+    (expect (neat--lookup-file-path "/tmp/foo.clj")
+            :to-equal "/tmp/foo.clj"))
+
+  (it "strips a file:// URL prefix"
+    (expect (neat--lookup-file-path "file:///tmp/foo.clj")
+            :to-equal "/tmp/foo.clj"))
+
+  (it "strips a bare file: prefix"
+    (expect (neat--lookup-file-path "file:/tmp/foo.clj")
+            :to-equal "/tmp/foo.clj"))
+
+  (it "returns nil for jar URLs"
+    (expect (neat--lookup-file-path "jar:file:/p/clj.jar!/clojure/core.clj")
+            :to-be nil))
+
+  (it "returns nil for other scheme URLs"
+    (expect (neat--lookup-file-path "http://example/foo.clj") :to-be nil))
+
+  (it "returns nil for a nil input"
+    (expect (neat--lookup-file-path nil) :to-be nil)))
+
+(describe "neat--xref-location-from-info"
+  (it "returns an xref location for a resolvable file"
+    (let* ((tmp (make-temp-file "neat-xref-"))
+           (info `(("file" . ,tmp) ("line" . 4) ("column" . 3))))
+      (unwind-protect
+          (let ((loc (neat--xref-location-from-info info)))
+            (expect loc :not :to-be nil)
+            (expect (xref-location-group loc) :to-equal tmp))
+        (delete-file tmp))))
+
+  (it "returns nil when the file doesn't exist on disk"
+    (let ((info '(("file" . "/no/such/file.clj") ("line" . 1))))
+      (expect (neat--xref-location-from-info info) :to-be nil)))
+
+  (it "returns nil for jar URLs"
+    (let ((info '(("file" . "jar:file:/p/clj.jar!/clojure/core.clj")
+                  ("line" . 10))))
+      (expect (neat--xref-location-from-info info) :to-be nil)))
+
+  (it "treats a 0 column as missing rather than going negative"
+    (let* ((tmp (make-temp-file "neat-xref-"))
+           (info `(("file" . ,tmp) ("line" . 1) ("column" . 0))))
+      (unwind-protect
+          (let ((loc (neat--xref-location-from-info info)))
+            (expect loc :not :to-be nil))
+        (delete-file tmp)))))
+
 (provide 'neat-test)
 ;;; neat-test.el ends here

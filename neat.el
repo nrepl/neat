@@ -21,6 +21,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'xref)
 (require 'neat-bencode)
 (require 'neat-client)
 (require 'neat-repl)
@@ -247,6 +248,12 @@ not necessarily resolvable on the server side."
   :type 'number
   :group 'neat)
 
+(defcustom neat-lookup-timeout 1.0
+  "Seconds to wait for a `lookup' response before giving up.
+Used by `neat-find-definition' via the xref backend."
+  :type 'number
+  :group 'neat)
+
 (defun neat-completion-at-point ()
   "`completion-at-point-functions' entry for `neat-mode'.
 Asks the server for completions of the symbol at point via the
@@ -418,6 +425,65 @@ output -- acceptable trade-off for not blocking the editor."
       t)))
 
 
+;;;; Find-definition via xref
+
+;; The `lookup' op returns `file', `line', and `column' for the
+;; looked-up symbol when the server knows them.  We expose that to
+;; Emacs as an `xref' backend so `xref-find-definitions' (M-.) and
+;; `xref-pop-marker-stack' (M-,) work without any neat-specific
+;; commands.  Servers that don't implement `lookup', or that return
+;; URLs we can't resolve locally (jar:..., http:..., ...) silently
+;; produce no results.
+
+(defun neat--lookup-file-path (raw)
+  "Turn a `lookup' RAW file field into a usable local path, or nil.
+
+Strips a leading `file:' or `file://' URL prefix.  Anything else with
+a `scheme:' prefix (typically `jar:' for Clojure core, `http:' for
+remote sources) is treated as unresolvable and returns nil; we don't
+try to extract files from jars or fetch remote sources here.  URL
+schemes match case-insensitively (per RFC 3986)."
+  (let ((case-fold-search t))
+    (cond
+     ((null raw) nil)
+     ((string-prefix-p "file://" raw t) (substring raw (length "file://")))
+     ((string-prefix-p "file:" raw t)   (substring raw (length "file:")))
+     ((string-match-p "\\`[a-z]+:" raw) nil)
+     (t raw))))
+
+(defun neat--xref-location-from-info (info)
+  "Return an `xref-file-location' from a `lookup' INFO dict, or nil.
+nREPL reports columns 1-indexed; `xref-file-location' wants them
+0-indexed.  Missing or zero columns degrade to 0 (start of line)."
+  (when-let* ((file (neat--lookup-file-path
+                     (neat-bencode-get info "file")))
+              ((file-exists-p file)))
+    (let ((col (neat-bencode-get info "column")))
+      (xref-make-file-location
+       file
+       (or (neat-bencode-get info "line") 1)
+       (if (and col (> col 0)) (1- col) 0)))))
+
+(defun neat--xref-backend ()
+  "`xref-backend-functions' entry for `neat-mode'.
+Returns the `neat' backend symbol when a live connection is available
+in the current buffer, otherwise nil so the next backend gets a turn."
+  (when-let* ((conn (neat-active-connection)))
+    (and (neat-connection-live-p conn) 'neat)))
+
+(cl-defmethod xref-backend-identifier-at-point ((_backend (eql neat)))
+  "Return the symbol around point as the xref identifier."
+  (thing-at-point 'symbol t))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql neat)) identifier)
+  "Resolve IDENTIFIER to its definition via the `lookup' op."
+  (when-let* ((conn (neat-active-connection))
+              (info (neat-lookup-sync conn identifier nil
+                                      neat-lookup-timeout))
+              (location (neat--xref-location-from-info info)))
+    (list (xref-make identifier location))))
+
+
 ;;;; Minor mode
 
 (defvar neat-mode-map
@@ -446,12 +512,16 @@ Bindings:
     (add-hook 'completion-at-point-functions
               #'neat-completion-at-point nil t)
     (add-hook 'eldoc-documentation-functions
-              #'neat-eldoc-function nil t))
+              #'neat-eldoc-function nil t)
+    (add-hook 'xref-backend-functions
+              #'neat--xref-backend nil t))
    (t
     (remove-hook 'completion-at-point-functions
                  #'neat-completion-at-point t)
     (remove-hook 'eldoc-documentation-functions
-                 #'neat-eldoc-function t))))
+                 #'neat-eldoc-function t)
+    (remove-hook 'xref-backend-functions
+                 #'neat--xref-backend t))))
 
 (provide 'neat)
 ;;; neat.el ends here
