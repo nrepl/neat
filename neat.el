@@ -396,7 +396,12 @@ Used by `neat-show-doc-at-point' and the xref find-definition backend."
   :group 'neat)
 
 (defun neat--render-doc (info)
-  "Render the `lookup' INFO dict into a `*neat-doc*' help buffer."
+  "Render the `lookup' INFO dict into a `*neat-doc*' help buffer.
+Builds the buffer manually rather than going through `with-help-window'
+because the latter messages \"Type q to dismiss\" after locking the
+buffer read-only -- and on older Emacs that message can race through
+eldev's message-redirection back into the still-bound `standard-output',
+which is the just-locked buffer."
   (let* ((name (or (neat-bencode-get info "name") ""))
          (ns (neat-bencode-get info "ns"))
          (arglists (neat-bencode-get info "arglists-str"))
@@ -405,23 +410,25 @@ Used by `neat-show-doc-at-point' and the xref find-definition backend."
          (line (neat-bencode-get info "line"))
          (qualified (if (and ns (not (string-empty-p ns)))
                         (concat ns "/" name)
-                      name)))
-    (with-help-window (format "*neat-doc: %s*" qualified)
-      (princ qualified)
-      (princ "\n")
-      (when arglists
-        (princ "\n")
-        (princ arglists)
-        (princ "\n"))
-      (when (and doc (not (string-empty-p doc)))
-        (princ "\n")
-        (princ doc)
-        (unless (string-suffix-p "\n" doc)
-          (princ "\n")))
-      (when file
-        (princ "\n")
-        (princ (format "Defined at %s%s\n"
-                       file (if line (format ":%d" line) "")))))))
+                      name))
+         (buf (get-buffer-create (format "*neat-doc: %s*" qualified))))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert qualified "\n")
+        (when arglists
+          (insert "\n" arglists "\n"))
+        (when (and doc (not (string-empty-p doc)))
+          (insert "\n" doc)
+          (unless (string-suffix-p "\n" doc)
+            (insert "\n")))
+        (when file
+          (insert "\n"
+                  (format "Defined at %s%s\n"
+                          file (if line (format ":%d" line) "")))))
+      (goto-char (point-min))
+      (help-mode))
+    (display-buffer buf)))
 
 (defun neat-show-doc-at-point ()
   "Pop a `*neat-doc*' help buffer with the docstring for the symbol at point.
