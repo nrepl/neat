@@ -34,10 +34,10 @@ jobs:
           eldev --version
 
       - name: Byte-compile
-        run: eldev compile --warnings-as-errors
+        run: eldev -d compile --warnings-as-errors
 
       - name: Lint
-        run: eldev lint
+        run: eldev -d lint
 
       - name: Test
-        run: eldev test
+        run: eldev -d test
