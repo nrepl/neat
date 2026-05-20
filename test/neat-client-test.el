@@ -276,6 +276,44 @@
               (expect neat-connections :to-equal nil)))
         (when (process-live-p proc) (delete-process proc)))))
 
+  (it "runs cleanup exactly once when neat-disconnect kills a live process"
+    ;; The sentinel and neat-disconnect used to both call flush + hook,
+    ;; relying on idempotency to avoid double-firing.  The single
+    ;; cleanup path makes this an assertion.
+    (let ((neat-connections nil)
+          (calls 0)
+          (proc (make-pipe-process :name "neat-test-pipe-once"
+                                   :noquery t)))
+      (unwind-protect
+          (let ((neat-disconnect-functions
+                 (list (lambda (_c) (cl-incf calls)))))
+            (cl-letf (((symbol-function 'open-network-stream)
+                       (lambda (_n _b _h _p &rest _) proc)))
+              (let ((conn (neat-connect "h" 1)))
+                (neat-disconnect conn)
+                (expect calls :to-equal 1))))
+        (when (process-live-p proc) (delete-process proc)))))
+
+  (it "runs cleanup when neat-disconnect is called on an already-dead conn"
+    (let ((neat-connections nil)
+          (calls 0)
+          (proc (make-pipe-process :name "neat-test-pipe-dead"
+                                   :noquery t)))
+      (unwind-protect
+          (let ((neat-disconnect-functions
+                 (list (lambda (_c) (cl-incf calls)))))
+            (cl-letf (((symbol-function 'open-network-stream)
+                       (lambda (_n _b _h _p &rest _) proc)))
+              (let ((conn (neat-connect "h" 1)))
+                ;; Detach the sentinel so killing the process doesn't
+                ;; auto-cleanup; the conn looks "dead but uncleaned".
+                (set-process-sentinel proc #'ignore)
+                (delete-process proc)
+                ;; Now neat-disconnect runs cleanup itself.
+                (neat-disconnect conn)
+                (expect calls :to-equal 1))))
+        (when (process-live-p proc) (delete-process proc)))))
+
   (it "runs neat-disconnect-functions when a connection's process dies"
     (let ((neat-connections nil)
           (got '())

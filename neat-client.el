@@ -107,16 +107,15 @@ later by enumeration or by `neat-set-default-connection'."
 
 (defun neat-disconnect (conn)
   "Close CONN and notify any pending callbacks.
-Removes CONN from `neat-connections' and, if it happened to be
-`neat-default-connection', demotes that to the next-most-recent live
-connection (or nil)."
+If CONN's underlying process is still alive, deleting it triggers the
+sentinel, which runs `neat-client--cleanup'.  If the process is already
+dead (e.g., the server went away before we got here) we run cleanup
+directly.  The cleanup itself is idempotent, so the two paths cannot
+double-fire."
   (let ((proc (neat-connection-process conn)))
-    (when (process-live-p proc)
-      (delete-process proc)))
-  (setq neat-connections (delq conn neat-connections))
-  (when (eq neat-default-connection conn)
-    (setq neat-default-connection (car neat-connections)))
-  (neat-client--flush-pending conn "disconnected"))
+    (if (process-live-p proc)
+        (delete-process proc)
+      (neat-client--cleanup conn "disconnected"))))
 
 (defun neat-connection-live-p (conn)
   "Return non-nil if CONN's underlying process is alive."
@@ -423,22 +422,30 @@ pruned afterwards."
       (remhash id (neat-connection-pending conn)))))
 
 (defun neat-client--sentinel (proc _event)
-  "Sentinel for nREPL connection PROC.
-Drops the connection from `neat-connections', demotes the default if
-needed, notifies any pending callbacks, and runs
-`neat-disconnect-functions'."
+  "Sentinel for nREPL connection PROC.  Delegates to `neat-client--cleanup'."
   (unless (process-live-p proc)
-    (let ((conn (process-get proc 'neat-connection)))
-      (when conn
-        (setq neat-connections (delq conn neat-connections))
-        (when (eq neat-default-connection conn)
-          (setq neat-default-connection (car neat-connections)))
-        ;; Order matters: pending callbacks see their synthesized
-        ;; `connection closed' response before the global disconnect
-        ;; hook updates buffers built on top.
-        (neat-client--flush-pending conn "connection closed")
-        (with-demoted-errors "neat: disconnect hook: %S"
-          (run-hook-with-args 'neat-disconnect-functions conn))))))
+    (when-let* ((conn (process-get proc 'neat-connection)))
+      (neat-client--cleanup conn "connection closed"))))
+
+(defun neat-client--cleanup (conn reason)
+  "Single cleanup path for a dead CONN.
+Drops CONN from `neat-connections', demotes the default if needed,
+flushes pending callbacks with REASON, and runs
+`neat-disconnect-functions'.
+
+Idempotent: the registry-membership check makes subsequent calls
+on the same connection no-ops, so `neat-disconnect' (synchronous)
+and the sentinel (asynchronous on involuntary deaths) can both
+funnel through here without double-firing.  Order matters: pending
+callbacks see their synthesized response before the global hook
+updates buffers built on top."
+  (when (memq conn neat-connections)
+    (setq neat-connections (delq conn neat-connections))
+    (when (eq neat-default-connection conn)
+      (setq neat-default-connection (car neat-connections)))
+    (neat-client--flush-pending conn reason)
+    (with-demoted-errors "neat: disconnect hook: %S"
+      (run-hook-with-args 'neat-disconnect-functions conn))))
 
 (defun neat-client--flush-pending (conn reason)
   "Notify every pending callback on CONN that the connection is gone.
