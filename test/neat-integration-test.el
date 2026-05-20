@@ -50,11 +50,36 @@
      ;; Basilisp prints the same banner shape as nrepl/nrepl, so we
      ;; can reuse the Clojure regex verbatim.
      :port-regexp "nREPL server started on port \\([0-9]+\\)"
+     :startup-timeout 30)
+    (:name "let-go"
+     :executable "let-go"
+     ;; let-go's `-p 0' is broken upstream (banner and .nrepl-port both
+     ;; say `0' while the server listens on a random ephemeral port), so
+     ;; we pre-allocate a free port and pass it explicitly.  The regex
+     ;; here is just a readiness signal -- the port we use is the one
+     ;; we picked, not whatever's in the banner.
+     :port-fn ,#'neat-it--free-port
+     :command-fn ,(lambda (port)
+                    (list "let-go" "-n" "-p" (number-to-string port)))
+     :port-regexp "nREPL server started"
      :startup-timeout 30))
   "Implementations the integration suite knows how to drive.
-Each entry is a plist with :name, :executable, :command-fn (returns the
-process command list), :port-regexp (matched against stdout to discover
-the chosen port), and :startup-timeout (seconds to wait for the banner).")
+
+Each entry is a plist:
+  :name             human-readable label.
+  :executable       the binary the suite skips if absent from PATH.
+  :command-fn       returns the process command list.  Called with no
+                    args by default, or with a pre-allocated port when
+                    `:port-fn' is provided.
+  :port-regexp      regex matched against stdout.  When `:port-fn' is
+                    absent, group 1 must capture the port the server
+                    chose; when `:port-fn' is provided, the match just
+                    signals \"server is up\".
+  :port-fn          optional zero-arg fn returning a free port the
+                    framework reserves before launching.  Use for
+                    servers that don't reliably announce the OS-assigned
+                    port back on stdout.
+  :startup-timeout  seconds to wait for the readiness signal.")
 
 
 ;;;; Subprocess lifecycle
@@ -62,38 +87,65 @@ the chosen port), and :startup-timeout (seconds to wait for the banner).")
 (defvar neat-it--server-process nil)
 (defvar neat-it--server-port nil)
 (defvar neat-it--server-output "")
+(defvar neat-it--server-ready nil)
 (defvar neat-it--port-regexp nil)
 
+(defun neat-it--free-port ()
+  "Return a TCP port number that's free on 127.0.0.1 right now.
+There's a small race window between us closing the listener and the
+subprocess claiming the port; on a quiet test machine it doesn't bite."
+  (let* ((proc (make-network-process
+                :name "neat-it-port-finder"
+                :host "127.0.0.1"
+                :service t
+                :server t
+                :family 'ipv4
+                :noquery t))
+         (port (process-contact proc :service)))
+    (delete-process proc)
+    port))
+
 (defun neat-it--server-filter (_proc chunk)
-  "Watch the server's output CHUNK for the port banner."
+  "Watch the server's output CHUNK for the readiness signal.
+Captures the port from regex group 1 when the port wasn't
+pre-allocated; otherwise just flips `neat-it--server-ready' once
+the banner appears."
   (setq neat-it--server-output (concat neat-it--server-output chunk))
-  (when (and (not neat-it--server-port)
+  (when (and (not neat-it--server-ready)
              (string-match neat-it--port-regexp neat-it--server-output))
-    (setq neat-it--server-port
-          (string-to-number (match-string 1 neat-it--server-output)))))
+    (unless neat-it--server-port
+      (setq neat-it--server-port
+            (string-to-number (match-string 1 neat-it--server-output))))
+    (setq neat-it--server-ready t)))
 
 (defun neat-it--start-server (impl)
-  "Boot the nREPL server described by IMPL, return its port.
-Errors out if the banner doesn't appear within the impl's timeout."
-  (setq neat-it--server-port nil
-        neat-it--server-output ""
-        neat-it--port-regexp (plist-get impl :port-regexp))
-  (let* ((cmd (funcall (plist-get impl :command-fn)))
-         (timeout (or (plist-get impl :startup-timeout) 60))
-         (proc (make-process
-                :name (format "neat-it-%s" (plist-get impl :name))
-                :buffer nil
-                :command cmd
-                :filter #'neat-it--server-filter
-                :noquery t
-                :connection-type 'pipe)))
-    (setq neat-it--server-process proc)
-    (let ((deadline (+ (float-time) timeout)))
-      (while (and (not neat-it--server-port)
-                  (process-live-p proc)
-                  (< (float-time) deadline))
-        (accept-process-output proc 0.5)))
-    (unless neat-it--server-port
+  "Boot the nREPL server described by IMPL and return its port.
+Errors out if the readiness banner doesn't appear within the impl's
+timeout."
+  (let* ((port-fn (plist-get impl :port-fn))
+         (port (and port-fn (funcall port-fn)))
+         (cmd (if port
+                  (funcall (plist-get impl :command-fn) port)
+                (funcall (plist-get impl :command-fn))))
+         (timeout (or (plist-get impl :startup-timeout) 60)))
+    (setq neat-it--server-port port
+          neat-it--server-output ""
+          neat-it--server-ready nil
+          neat-it--port-regexp (plist-get impl :port-regexp))
+    (let ((proc (make-process
+                 :name (format "neat-it-%s" (plist-get impl :name))
+                 :buffer nil
+                 :command cmd
+                 :filter #'neat-it--server-filter
+                 :noquery t
+                 :connection-type 'pipe)))
+      (setq neat-it--server-process proc)
+      (let ((deadline (+ (float-time) timeout)))
+        (while (and (not neat-it--server-ready)
+                    (process-live-p proc)
+                    (< (float-time) deadline))
+          (accept-process-output proc 0.5))))
+    (unless neat-it--server-ready
       (error "Neat: %s nREPL server failed to start: %s"
              (plist-get impl :name) neat-it--server-output))
     neat-it--server-port))
@@ -105,6 +157,7 @@ Errors out if the banner doesn't appear within the impl's timeout."
   (setq neat-it--server-process nil
         neat-it--server-port nil
         neat-it--server-output ""
+        neat-it--server-ready nil
         neat-it--port-regexp nil))
 
 (defun neat-it--wait-until (conn predicate &optional timeout)

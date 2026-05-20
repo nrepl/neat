@@ -233,10 +233,14 @@ that's installed on PATH. Currently:
 | Clojure (`nrepl/nrepl`) | `clojure` | [clojure.org/guides/install_clojure](https://clojure.org/guides/install_clojure) |
 | [Babashka](https://babashka.org) | `bb` | `brew install borkdude/brew/babashka` |
 | [Basilisp](https://basilisp.readthedocs.io) (Python) | `basilisp` | `pipx install basilisp` |
+| [let-go](https://github.com/nooga/let-go) (Go) | `let-go` | `go install github.com/nooga/let-go@latest` |
 
 Add more entries to the list to teach the suite about your favorite
-nREPL implementation. It just needs an executable that prints a port
-banner on stdout.
+nREPL implementation. Most servers just need an executable that prints
+a port banner on stdout; for ones that can't or won't announce an
+OS-assigned port (let-go, currently), the entry can supply a
+`:port-fn` that pre-allocates a free port for the framework to pass
+in.
 
 ### Debugging the wire
 
