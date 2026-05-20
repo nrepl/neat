@@ -280,9 +280,50 @@ not necessarily resolvable on the server side."
 
 (defcustom neat-lookup-timeout 1.0
   "Seconds to wait for a `lookup' response before giving up.
-Used by `neat-find-definition' via the xref backend."
+Used by `neat-show-doc-at-point' and the xref find-definition backend."
   :type 'number
   :group 'neat)
+
+(defun neat--render-doc (info)
+  "Render the `lookup' INFO dict into a `*neat-doc*' help buffer."
+  (let* ((name (or (neat-bencode-get info "name") ""))
+         (ns (neat-bencode-get info "ns"))
+         (arglists (neat-bencode-get info "arglists-str"))
+         (doc (neat-bencode-get info "doc"))
+         (file (neat-bencode-get info "file"))
+         (line (neat-bencode-get info "line"))
+         (qualified (if (and ns (not (string-empty-p ns)))
+                        (concat ns "/" name)
+                      name)))
+    (with-help-window (format "*neat-doc: %s*" qualified)
+      (princ qualified)
+      (princ "\n")
+      (when arglists
+        (princ "\n")
+        (princ arglists)
+        (princ "\n"))
+      (when (and doc (not (string-empty-p doc)))
+        (princ "\n")
+        (princ doc)
+        (unless (string-suffix-p "\n" doc)
+          (princ "\n")))
+      (when file
+        (princ "\n")
+        (princ (format "Defined at %s%s\n"
+                       file (if line (format ":%d" line) "")))))))
+
+(defun neat-show-doc-at-point ()
+  "Pop a `*neat-doc*' help buffer with the docstring for the symbol at point.
+Uses the `lookup' op.  Signals a `user-error' if there's no symbol at
+point or the server doesn't know about the symbol."
+  (interactive)
+  (let* ((conn (neat--require-connection))
+         (sym (or (thing-at-point 'symbol t)
+                  (user-error "Neat: no symbol at point")))
+         (info (neat-lookup-sync conn sym nil neat-lookup-timeout)))
+    (unless info
+      (user-error "Neat: no doc for `%s'" sym))
+    (neat--render-doc info)))
 
 (defun neat--candidate-with-type (cand)
   "Turn a `completions' response entry CAND into an annotated string.
@@ -556,6 +597,7 @@ The caller is responsible for any surrounding whitespace."
     (define-key map (kbd "C-c C-z") #'neat-switch-to-repl)
     (define-key map (kbd "C-c C-k") #'neat-interrupt-eval)
     (define-key map (kbd "C-c M-n") #'neat-set-ns)
+    (define-key map (kbd "C-c C-d C-d") #'neat-show-doc-at-point)
     map)
   "Keymap for `neat-mode'.")
 

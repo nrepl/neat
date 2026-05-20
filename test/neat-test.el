@@ -229,6 +229,33 @@ POS is a 1-indexed buffer position."
             (expect loc :not :to-be nil))
         (delete-file tmp)))))
 
+(describe "neat--render-doc"
+  (it "renders ns/name, arglist, doc, and source location"
+    (neat--render-doc '(("name" . "map") ("ns" . "clojure.core")
+                        ("arglists-str" . "([f] [f coll])")
+                        ("doc" . "Returns a lazy sequence...")
+                        ("file" . "/tmp/core.clj") ("line" . 42)))
+    (with-current-buffer (get-buffer "*neat-doc: clojure.core/map*")
+      (let ((text (buffer-string)))
+        (expect text :to-match "clojure.core/map")
+        (expect text :to-match "(\\[f\\] \\[f coll\\])")
+        (expect text :to-match "Returns a lazy sequence")
+        (expect text :to-match "Defined at /tmp/core.clj:42"))
+      (kill-buffer)))
+
+  (it "tolerates a missing namespace"
+    (neat--render-doc '(("name" . "foo") ("doc" . "bar")))
+    (with-current-buffer (get-buffer "*neat-doc: foo*")
+      (expect (buffer-string) :to-match "foo")
+      (kill-buffer)))
+
+  (it "tolerates an empty docstring"
+    (neat--render-doc '(("name" . "foo") ("ns" . "u")
+                        ("arglists-str" . "([])") ("doc" . "")))
+    (with-current-buffer (get-buffer "*neat-doc: u/foo*")
+      (expect (buffer-string) :to-match "u/foo")
+      (kill-buffer))))
+
 (describe "neat--candidate-with-type"
   (it "returns the candidate string with type as a text property"
     (let ((s (neat--candidate-with-type

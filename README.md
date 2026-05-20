@@ -148,6 +148,7 @@ Bindings:
 | `C-c C-z` | `neat-switch-to-repl`  |
 | `C-c C-k` | `neat-interrupt-eval`  |
 | `C-c M-n` | `neat-set-ns`          |
+| `C-c C-d C-d` | `neat-show-doc-at-point` |
 | `M-.`     | `xref-find-definitions` |
 | `M-,`     | `xref-go-back`         |
 

@@ -94,6 +94,7 @@ to refuse sending and message the user instead.")
 (declare-function neat-eldoc-function "neat" (callback &rest _ignored))
 (declare-function neat--xref-backend "neat" ())
 (declare-function neat--mode-line-info "neat" ())
+(declare-function neat-show-doc-at-point "neat" ())
 
 (defvar neat-repl-mode-map
   (let ((map (make-sparse-keymap)))
@@ -102,6 +103,7 @@ to refuse sending and message the user instead.")
     (define-key map (kbd "C-c C-c") #'neat-repl-interrupt)
     (define-key map (kbd "C-c C-q") #'neat-repl-quit)
     (define-key map (kbd "C-c M-o") #'neat-repl-clear-buffer)
+    (define-key map (kbd "C-c C-d C-d") #'neat-show-doc-at-point)
     map)
   "Keymap for `neat-repl-mode'.")
 
