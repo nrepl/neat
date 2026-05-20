@@ -284,10 +284,25 @@ Used by `neat-find-definition' via the xref backend."
   :type 'number
   :group 'neat)
 
+(defun neat--candidate-with-type (cand)
+  "Turn a `completions' response entry CAND into an annotated string.
+Stashes the server-reported `type' (function, macro, var, ...) as a
+text property so `neat--completion-annotation' can surface it."
+  (when-let* ((s (neat-bencode-get cand "candidate")))
+    (let ((type (neat-bencode-get cand "type")))
+      (if type (propertize s 'neat-completion-type type) s))))
+
+(defun neat--completion-annotation (cand)
+  "Return CAND's annotation -- the `type' stashed by the CAPF backend."
+  (when-let* ((type (get-text-property 0 'neat-completion-type cand)))
+    (concat " " type)))
+
 (defun neat-completion-at-point ()
   "`completion-at-point-functions' entry for `neat-mode'.
 Asks the server for completions of the symbol at point via the
-`completions' op and returns them as a static candidate list."
+`completions' op and returns them as a static candidate list.
+Each candidate carries its server-reported `type' on a text property,
+surfaced via `:annotation-function' in the completion UI."
   (let ((bounds (bounds-of-thing-at-point 'symbol)))
     (when bounds
       (let* ((conn (neat-active-connection))
@@ -297,13 +312,14 @@ Asks the server for completions of the symbol at point via the
         (when (and conn (neat-connection-live-p conn)
                    (>= (length prefix) 1))
           (let ((cands (delq nil
-                             (mapcar (lambda (c)
-                                       (neat-bencode-get c "candidate"))
+                             (mapcar #'neat--candidate-with-type
                                      (neat-completions-sync
                                       conn prefix nil
                                       neat-completion-timeout)))))
             (when cands
-              (list start end cands :exclusive 'no))))))))
+              (list start end cands
+                    :exclusive 'no
+                    :annotation-function #'neat--completion-annotation))))))))
 
 (defun neat--eldoc-thing-at-point ()
   "Return the symbol eldoc should look up around point, or nil.

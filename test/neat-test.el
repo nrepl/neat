@@ -229,6 +229,30 @@ POS is a 1-indexed buffer position."
             (expect loc :not :to-be nil))
         (delete-file tmp)))))
 
+(describe "neat--candidate-with-type"
+  (it "returns the candidate string with type as a text property"
+    (let ((s (neat--candidate-with-type
+              '(("candidate" . "map") ("type" . "function")))))
+      (expect s :to-equal "map")
+      (expect (get-text-property 0 'neat-completion-type s)
+              :to-equal "function")))
+
+  (it "returns a bare string when the server reports no type"
+    (let ((s (neat--candidate-with-type '(("candidate" . "foo")))))
+      (expect s :to-equal "foo")
+      (expect (get-text-property 0 'neat-completion-type s) :to-be nil)))
+
+  (it "returns nil for an entry with no candidate"
+    (expect (neat--candidate-with-type '(("type" . "function"))) :to-be nil)))
+
+(describe "neat--completion-annotation"
+  (it "returns the propertized type prefixed with a space"
+    (let ((cand (propertize "map" 'neat-completion-type "function")))
+      (expect (neat--completion-annotation cand) :to-equal " function")))
+
+  (it "returns nil for a candidate carrying no type"
+    (expect (neat--completion-annotation "plain") :to-be nil)))
+
 (describe "neat--mode-line-info"
   (it "returns nil when no connection is active"
     (let ((neat-default-connection nil))
