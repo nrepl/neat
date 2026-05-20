@@ -2,8 +2,11 @@
 
 [![CI](https://github.com/nrepl/neat/actions/workflows/ci.yml/badge.svg)](https://github.com/nrepl/neat/actions/workflows/ci.yml)
 
-> I take my REPL neat
-> My coffee black and my bed at three
+> I think I'll take my REPL neat <br>
+> My parens black and my bed at three <br>
+> CIDER's too sweet for me...
+>
+> -- Bozier
 
 A small, language-agnostic [nREPL][nrepl] client for Emacs.
 
