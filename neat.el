@@ -67,6 +67,117 @@ default."
   (message "Neat: default connection is now %s"
            (neat--connection-label conn)))
 
+;;;###autoload
+(defun neat-disconnect-connection (conn)
+  "Pick a live connection via `completing-read' and disconnect it.
+CONN is the chosen `neat-connection'.  For the library-level primitive,
+see `neat-disconnect'."
+  (interactive
+   (progn
+     (unless neat-connections
+       (user-error "Neat: no live connections"))
+     (let* ((labels (mapcar (lambda (c) (cons (neat--connection-label c) c))
+                            neat-connections))
+            (choice (completing-read "Disconnect: "
+                                     (mapcar #'car labels)
+                                     nil t)))
+       (list (cdr (assoc choice labels))))))
+  (let ((label (neat--connection-label conn)))
+    (neat-disconnect conn)
+    (message "Neat: disconnected %s" label)))
+
+
+;;;; Connection list buffer
+
+(defvar neat-connections-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map (kbd "RET") #'neat-connections-set-default)
+    (define-key map (kbd "d")   #'neat-connections-disconnect)
+    (define-key map (kbd "g")   #'neat-connections-refresh)
+    map)
+  "Keymap for `neat-connections-mode'.")
+
+(define-derived-mode neat-connections-mode tabulated-list-mode "neat-conns"
+  "Major mode for the `*neat-connections*' buffer.
+Lists every live `neat-connection'.  Keys: \\<neat-connections-mode-map>
+\\[neat-connections-set-default] sets the connection on the current
+line as `neat-default-connection', \\[neat-connections-disconnect]
+disconnects it, \\[neat-connections-refresh] reloads from
+`neat-connections'."
+  (setq tabulated-list-format
+        [("D"         2  nil)
+         ("Host:Port" 24 t)
+         ("Session"   16 nil)
+         ("Status"    8  nil)])
+  (setq tabulated-list-padding 1)
+  (tabulated-list-init-header))
+
+(defun neat--connections-entry (conn)
+  "Build a `tabulated-list' entry for CONN."
+  (let* ((host (neat-connection-host conn))
+         (port (neat-connection-port conn))
+         (session (neat-connection-session conn))
+         (live (neat-connection-live-p conn))
+         (default (eq conn neat-default-connection)))
+    (list conn
+          (vector (if default "*" "")
+                  (format "%s:%d" host port)
+                  (if session
+                      (concat (substring session 0
+                                         (min 8 (length session))) "...")
+                    "--")
+                  (if live "live" "closed")))))
+
+(defun neat-connections-refresh ()
+  "Reload `*neat-connections*' entries from `neat-connections'."
+  (interactive)
+  (setq tabulated-list-entries
+        (mapcar #'neat--connections-entry neat-connections))
+  (tabulated-list-print t))
+
+(defun neat-connections-set-default ()
+  "Set the connection on the current line as `neat-default-connection'."
+  (interactive)
+  (let ((conn (tabulated-list-get-id)))
+    (unless conn (user-error "Neat: no connection on this line"))
+    (setq neat-default-connection conn)
+    (neat-connections-refresh)
+    (message "Neat: default is now %s" (neat--connection-label conn))))
+
+(defun neat-connections-disconnect ()
+  "Disconnect the connection on the current line."
+  (interactive)
+  (let ((conn (tabulated-list-get-id)))
+    (unless conn (user-error "Neat: no connection on this line"))
+    (let ((label (neat--connection-label conn)))
+      (neat-disconnect conn)
+      (message "Neat: disconnected %s" label))))
+
+(defun neat--connections-buffer-refresh (&rest _)
+  "Refresh `*neat-connections*' if it exists.  Cheap no-op otherwise."
+  (when-let* ((buf (get-buffer "*neat-connections*"))
+              ((buffer-live-p buf)))
+    (with-current-buffer buf
+      (when (derived-mode-p 'neat-connections-mode)
+        (neat-connections-refresh)))))
+
+;;;###autoload
+(add-hook 'neat-disconnect-functions #'neat--connections-buffer-refresh)
+
+;;;###autoload
+(defun neat-list-connections ()
+  "Pop up `*neat-connections*', a live list of `neat-connections'.
+The buffer refreshes itself on disconnect via
+`neat-disconnect-functions'; press \\<neat-connections-mode-map>\
+\\[neat-connections-refresh] to force a manual reload."
+  (interactive)
+  (let ((buf (get-buffer-create "*neat-connections*")))
+    (with-current-buffer buf
+      (neat-connections-mode)
+      (neat-connections-refresh))
+    (pop-to-buffer buf)))
+
 
 ;;;; Port-file discovery
 

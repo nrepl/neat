@@ -229,6 +229,34 @@ POS is a 1-indexed buffer position."
             (expect loc :not :to-be nil))
         (delete-file tmp)))))
 
+(describe "neat--connections-entry"
+  (it "marks the default connection with *"
+    (let* ((proc (make-pipe-process :name "neat-test-entry-default"
+                                    :noquery t))
+           (conn (neat-connection--make
+                  :host "h" :port 7888 :process proc
+                  :session "abcdef0123456789"))
+           (neat-default-connection conn))
+      (unwind-protect
+          (let* ((entry (neat--connections-entry conn))
+                 (cells (cadr entry)))
+            (expect (aref cells 0) :to-equal "*")
+            (expect (aref cells 1) :to-equal "h:7888")
+            (expect (aref cells 2) :to-equal "abcdef01...")
+            (expect (aref cells 3) :to-equal "live"))
+        (when (process-live-p proc) (delete-process proc)))))
+
+  (it "shows -- and `closed' for a connection with no session and a dead proc"
+    (let* ((proc (make-pipe-process :name "neat-test-entry-dead"
+                                    :noquery t))
+           (conn (neat-connection--make :host "h" :port 9 :process proc)))
+      (delete-process proc)
+      (let* ((entry (neat--connections-entry conn))
+             (cells (cadr entry)))
+        (expect (aref cells 0) :to-equal "")     ; not default
+        (expect (aref cells 2) :to-equal "--")
+        (expect (aref cells 3) :to-equal "closed")))))
+
 (describe "neat--render-doc"
   (it "renders ns/name, arglist, doc, and source location"
     (neat--render-doc '(("name" . "map") ("ns" . "clojure.core")
