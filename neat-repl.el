@@ -95,6 +95,7 @@ in a language with very different bracketing rules.")
     (define-key map (kbd "RET") #'neat-repl-return)
     (define-key map (kbd "C-c C-c") #'neat-repl-interrupt)
     (define-key map (kbd "C-c C-q") #'neat-repl-quit)
+    (define-key map (kbd "C-c M-o") #'neat-repl-clear-buffer)
     map)
   "Keymap for `neat-repl-mode'.")
 
@@ -242,6 +243,15 @@ Otherwise insert a newline so the user can keep typing the form."
   (if neat-current-connection
       (neat-interrupt neat-current-connection)
     (user-error "Neat: no connection in this buffer")))
+
+(defun neat-repl-clear-buffer ()
+  "Wipe the REPL buffer's history but keep the live prompt.
+Doesn't touch the input ring (`M-p' / `M-n' still work) or the
+underlying connection."
+  (interactive)
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (neat-repl--insert-prompt)))
 
 (defun neat-repl-quit ()
   "Disconnect from the nREPL server and bury this buffer."
