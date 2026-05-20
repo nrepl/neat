@@ -180,6 +180,26 @@ with `neat-mode' enabled will use it automatically."
   (interactive)
   (neat--eval-string (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun neat-load-buffer-file ()
+  "Load the file the current buffer is visiting via the `load-file' op.
+Unlike `neat-eval-buffer', this carries the buffer's path and filename
+to the server, so error messages can point at the right file and line.
+Sends the buffer's current contents (no save required) and ignores any
+narrowing.  The path is whatever the client sees as `buffer-file-name';
+if you're talking to a remote server, that path is not necessarily
+resolvable on the server side."
+  (interactive)
+  (unless buffer-file-name
+    (user-error "Neat: buffer is not visiting a file"))
+  (let ((conn (neat--require-connection))
+        (contents (save-restriction
+                    (widen)
+                    (buffer-substring-no-properties (point-min) (point-max)))))
+    (neat-load-file
+     conn contents buffer-file-name
+     (file-name-nondirectory buffer-file-name) nil
+     (lambda (resp) (neat--render-into-repl conn resp)))))
+
 (defun neat-switch-to-repl ()
   "Pop to the REPL buffer for the active connection."
   (interactive)
@@ -386,6 +406,7 @@ output -- acceptable trade-off for not blocking the editor."
     (define-key map (kbd "C-c C-c") #'neat-eval-defun)
     (define-key map (kbd "C-c C-r") #'neat-eval-region)
     (define-key map (kbd "C-c C-b") #'neat-eval-buffer)
+    (define-key map (kbd "C-c C-l") #'neat-load-buffer-file)
     (define-key map (kbd "C-c C-z") #'neat-switch-to-repl)
     (define-key map (kbd "C-c C-k") #'neat-interrupt-eval)
     map)

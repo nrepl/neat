@@ -144,8 +144,17 @@ Bindings:
 | `C-c C-c` | `neat-eval-defun`      |
 | `C-c C-r` | `neat-eval-region`     |
 | `C-c C-b` | `neat-eval-buffer`     |
+| `C-c C-l` | `neat-load-buffer-file` |
 | `C-c C-z` | `neat-switch-to-repl`  |
 | `C-c C-k` | `neat-interrupt-eval`  |
+
+`neat-eval-buffer` ships the buffer contents as an `eval` op (each form
+evaluated in turn, every value streamed back). `neat-load-buffer-file`
+sends a `load-file` op instead, carrying the buffer's path and filename
+so the server can attribute file and line numbers to errors. Use it
+when you're loading an actual file from disk and care about good
+diagnostics; use `neat-eval-buffer` when you're scratching around in
+a buffer that may not even be on disk.
 
 ## Design
 

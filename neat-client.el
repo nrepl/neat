@@ -204,6 +204,20 @@ SESSION defaults to the connection's current session, set by
                 ,@(when sess `((session . ,sess))))))
     (neat-send conn msg callback)))
 
+(defun neat-load-file (conn file-contents
+                            &optional file-path file-name session callback)
+  "Send a `load-file' op on CONN carrying FILE-CONTENTS.
+FILE-PATH and FILE-NAME are optional metadata the server uses to
+attribute file/line info to errors and other diagnostics.  SESSION
+defaults to the connection's current session.  CALLBACK, if given,
+fires for each response."
+  (let* ((sess (or session (neat-connection-session conn)))
+         (msg `((op . "load-file") (file . ,file-contents)
+                ,@(when file-path `((file-path . ,file-path)))
+                ,@(when file-name `((file-name . ,file-name)))
+                ,@(when sess `((session . ,sess))))))
+    (neat-send conn msg callback)))
+
 (defun neat-interrupt (conn &optional session interrupt-id callback)
   "Send an `interrupt' op on CONN.
 SESSION defaults to the connection's current session.  INTERRUPT-ID,

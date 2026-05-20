@@ -132,6 +132,38 @@
           (expect (neat-bencode-get decoded "code") :to-equal "(+ 1 2)")
           (expect (neat-bencode-get decoded "session") :to-equal "S-1"))))))
 
+(describe "neat-load-file"
+  (it "builds a load-file op with contents and metadata"
+    (let ((conn (neat-connection--make))
+          sent)
+      (setf (neat-connection-session conn) "S-2")
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-load-file conn "(ns foo) (def x 1)" "/tmp/foo.clj" "foo.clj")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "op") :to-equal "load-file")
+          (expect (neat-bencode-get decoded "file")
+                  :to-equal "(ns foo) (def x 1)")
+          (expect (neat-bencode-get decoded "file-path")
+                  :to-equal "/tmp/foo.clj")
+          (expect (neat-bencode-get decoded "file-name") :to-equal "foo.clj")
+          (expect (neat-bencode-get decoded "session") :to-equal "S-2")))))
+
+  (it "omits path/name/session when not provided"
+    (let ((conn (neat-connection--make))
+          sent)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-load-file conn "(+ 1 2)")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "op") :to-equal "load-file")
+          (expect (neat-bencode-get decoded "file") :to-equal "(+ 1 2)")
+          (expect (assoc "file-path" decoded) :to-be nil)
+          (expect (assoc "file-name" decoded) :to-be nil)
+          (expect (assoc "session" decoded) :to-be nil))))))
+
 (describe "neat-completions"
   (it "builds a completions op with prefix, ns, and session"
     (let ((conn (neat-connection--make))
