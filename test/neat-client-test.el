@@ -313,6 +313,39 @@
         (dolist (p (list proc-a proc-b))
           (when (process-live-p p) (delete-process p)))))))
 
+(describe "neat-active-connection"
+  (it "prefers the buffer-local override when it's live"
+    (let* ((proc-a (make-pipe-process :name "neat-test-active-a" :noquery t))
+           (proc-b (make-pipe-process :name "neat-test-active-b" :noquery t))
+           (conn-a (neat-connection--make :host "h" :port 1 :process proc-a))
+           (conn-b (neat-connection--make :host "h" :port 2 :process proc-b))
+           (neat-default-connection conn-b))
+      (unwind-protect
+          (with-temp-buffer
+            (setq neat-current-connection conn-a)
+            (expect (neat-active-connection) :to-be conn-a))
+        (when (process-live-p proc-a) (delete-process proc-a))
+        (when (process-live-p proc-b) (delete-process proc-b)))))
+
+  (it "falls back to the default when the buffer-local override is dead"
+    (let* ((proc-a (make-pipe-process :name "neat-test-active-a2" :noquery t))
+           (proc-b (make-pipe-process :name "neat-test-active-b2" :noquery t))
+           (conn-a (neat-connection--make :host "h" :port 1 :process proc-a))
+           (conn-b (neat-connection--make :host "h" :port 2 :process proc-b))
+           (neat-default-connection conn-b))
+      (unwind-protect
+          (with-temp-buffer
+            (setq neat-current-connection conn-a)
+            (delete-process proc-a)
+            (expect (neat-active-connection) :to-be conn-b))
+        (when (process-live-p proc-b) (delete-process proc-b)))))
+
+  (it "returns nil when neither override nor default is live"
+    (with-temp-buffer
+      (let ((neat-default-connection nil))
+        (setq neat-current-connection nil)
+        (expect (neat-active-connection) :to-be nil)))))
+
 (describe "neat-send"
   (it "increments the request id for each call"
     (let ((conn (neat-connection--make))

@@ -38,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `neat-active-connection` falls back to `neat-default-connection` when the buffer-local `neat-current-connection` override points at a dead connection. Previously, source buffers held onto stale overrides and had to be re-routed by hand after a reconnect.
 - `neat-eval` and `neat-load-file` now take a property list of options after the required positional args, instead of stacking more and more positional `&optional`s. Migration: `(neat-eval conn code nil callback)` becomes `(neat-eval conn code :callback callback)`; `(neat-load-file conn contents file-path file-name)` becomes `(neat-load-file conn contents :file-path path :file-name name)`. Both ops accept `:session` and `:callback`; `eval` additionally accepts `:ns`, `:file`, `:line`, `:column`.
 - Connection routing primitives (`neat-default-connection`, `neat-current-connection`, `neat-active-connection`) moved from `neat.el` to `neat-client.el`, where they belong as a library-level concern. The REPL buffer's `neat-repl-connection` defvar-local has been removed; the REPL now sets `neat-current-connection` directly, unifying the routing model across all buffer types.
 

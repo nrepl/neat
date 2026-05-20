@@ -56,9 +56,14 @@ way).")
 
 (defun neat-active-connection ()
   "Return the active connection for the current buffer, or nil.
-Returns `neat-current-connection' when set buffer-locally, else
-falls back to `neat-default-connection'."
-  (or neat-current-connection neat-default-connection))
+Prefers `neat-current-connection' when set buffer-locally and still
+live, otherwise falls back to `neat-default-connection'.  The
+buffer-local slot is not auto-cleared -- callers that want it
+overwritten own that decision."
+  (if (and neat-current-connection
+           (neat-connection-live-p neat-current-connection))
+      neat-current-connection
+    neat-default-connection))
 
 (cl-defstruct (neat-connection (:constructor neat-connection--make)
                                 (:copier nil))
