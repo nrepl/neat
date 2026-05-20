@@ -130,7 +130,32 @@
         (let ((decoded (car (neat-bencode-decode sent))))
           (expect (neat-bencode-get decoded "op") :to-equal "eval")
           (expect (neat-bencode-get decoded "code") :to-equal "(+ 1 2)")
-          (expect (neat-bencode-get decoded "session") :to-equal "S-1"))))))
+          (expect (neat-bencode-get decoded "session") :to-equal "S-1")))))
+
+  (it "includes file/line/column when provided"
+    (let ((conn (neat-connection--make))
+          sent)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-eval conn "(+ 1 2)" nil "/tmp/foo.clj" 42 7)
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "file")
+                  :to-equal "/tmp/foo.clj")
+          (expect (neat-bencode-get decoded "line") :to-equal 42)
+          (expect (neat-bencode-get decoded "column") :to-equal 7)))))
+
+  (it "omits file/line/column when not provided"
+    (let ((conn (neat-connection--make))
+          sent)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-eval conn "(+ 1 2)")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (assoc "file" decoded) :to-be nil)
+          (expect (assoc "line" decoded) :to-be nil)
+          (expect (assoc "column" decoded) :to-be nil))))))
 
 (describe "neat-load-file"
   (it "builds a load-file op with contents and metadata"

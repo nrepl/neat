@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `neat-load-file` library op and `neat-load-buffer-file` interactive command (bound to `C-c C-l`). Uses the standard nREPL `load-file` op, which carries the buffer's path and filename so the server can attribute file and line numbers to errors. Distinct from `neat-eval-buffer`, which still ships the buffer as a plain `eval`.
+- `neat-eval` now accepts optional `file`, `line`, and `column` arguments. The source-buffer eval commands (`neat-eval-last-sexp`, `neat-eval-defun`, `neat-eval-region`, `neat-eval-buffer`) compute these from the buffer and send them, so the server can point error messages at the actual source location instead of an anonymous string.
 - Initial project skeleton with Eldev and Buttercup.
 - `neat-bencode` module: encode/decode for the bencode wire format used by nREPL.
 - `neat-client` module: connection management, request dispatch, and the core nREPL ops (`describe`, `clone`, `eval`, `interrupt`, `close`).

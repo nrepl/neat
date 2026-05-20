@@ -198,7 +198,7 @@ Otherwise insert a newline so the user can keep typing the form."
       (neat-repl--insert-prompt))
      (t
       (neat-eval
-       conn trimmed nil
+       conn trimmed nil nil nil nil
        (lambda (resp)
          (when (buffer-live-p buffer)
            (with-current-buffer buffer

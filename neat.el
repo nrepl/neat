@@ -148,19 +148,34 @@ with `neat-mode' enabled will use it automatically."
         (cond (err (message "neat: %s" (string-trim err)))
               (value (message "=> %s" value)))))))
 
-(defun neat--eval-string (code)
-  "Evaluate CODE on the active connection."
-  (let ((conn (neat--require-connection)))
-    (neat-eval conn code nil
+(defun neat--eval-string (code &optional pos)
+  "Evaluate CODE on the active connection.
+POS, if given, is a buffer position used to compute file/line/column
+metadata for the `eval' op so the server can attribute errors to the
+right source location.  Line and column are 1-indexed; line numbers
+ignore narrowing, and the column is a character offset (tabs count
+as one column), matching the convention used by Lisp readers."
+  (let* ((conn (neat--require-connection))
+         (file buffer-file-name)
+         (line (and pos (line-number-at-pos pos t)))
+         (column (and pos
+                      (save-excursion
+                        (save-restriction
+                          (widen)
+                          (goto-char pos)
+                          (1+ (- pos (line-beginning-position))))))))
+    (neat-eval conn code nil file line column
                (lambda (resp) (neat--render-into-repl conn resp)))))
 
 (defun neat-eval-last-sexp ()
   "Evaluate the sexp before point."
   (interactive)
-  (let ((sexp (thing-at-point 'sexp t)))
-    (unless sexp
+  (let ((bounds (bounds-of-thing-at-point 'sexp)))
+    (unless bounds
       (user-error "No sexp at point"))
-    (neat--eval-string sexp)))
+    (neat--eval-string
+     (buffer-substring-no-properties (car bounds) (cdr bounds))
+     (car bounds))))
 
 (defun neat-eval-defun ()
   "Evaluate the top-level form containing point."
@@ -168,26 +183,31 @@ with `neat-mode' enabled will use it automatically."
   (save-excursion
     (let* ((end (progn (end-of-defun) (point)))
            (start (progn (beginning-of-defun) (point))))
-      (neat--eval-string (buffer-substring-no-properties start end)))))
+      (neat--eval-string (buffer-substring-no-properties start end) start))))
 
 (defun neat-eval-region (beg end)
   "Evaluate the region between BEG and END."
   (interactive "r")
-  (neat--eval-string (buffer-substring-no-properties beg end)))
+  (neat--eval-string (buffer-substring-no-properties beg end) beg))
 
 (defun neat-eval-buffer ()
-  "Evaluate the current buffer."
+  "Evaluate the current buffer.
+Widens before reading, so a narrowed buffer still evaluates as a whole."
   (interactive)
-  (neat--eval-string (buffer-substring-no-properties (point-min) (point-max))))
+  (neat--eval-string
+   (save-restriction
+     (widen)
+     (buffer-substring-no-properties (point-min) (point-max)))
+   1))
 
 (defun neat-load-buffer-file ()
   "Load the file the current buffer is visiting via the `load-file' op.
 Unlike `neat-eval-buffer', this carries the buffer's path and filename
 to the server, so error messages can point at the right file and line.
 Sends the buffer's current contents (no save required) and ignores any
-narrowing.  The path is whatever the client sees as `buffer-file-name';
-if you're talking to a remote server, that path is not necessarily
-resolvable on the server side."
+narrowing.  The path is whatever the client sees as the variable
+`buffer-file-name'; if you're talking to a remote server, that path is
+not necessarily resolvable on the server side."
   (interactive)
   (unless buffer-file-name
     (user-error "Neat: buffer is not visiting a file"))

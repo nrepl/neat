@@ -120,5 +120,53 @@ POS is a 1-indexed buffer position."
     (expect (neat--lispy-highlight-arglist "[a b]" nil)
             :to-equal "[a b]")))
 
+(defun neat-test--capture-eval-args (body-fn)
+  "Run BODY-FN with `neat-eval' stubbed; return the arglist it was called with."
+  (let (captured)
+    (cl-letf (((symbol-function 'neat--require-connection)
+               (lambda () 'stub-conn))
+              ((symbol-function 'neat-eval)
+               (lambda (&rest args) (setq captured args))))
+      (funcall body-fn))
+    captured))
+
+(describe "neat--eval-string source-location metadata"
+  (it "computes 1-indexed line/column for the start of the form"
+    (with-temp-buffer
+      (insert "line1\nline2\n  (foo)\n")
+      (goto-char (point-min))
+      ;; Position of the open paren on line 3: after "line1\nline2\n  ".
+      (let* ((pos (1+ (length "line1\nline2\n  ")))
+             (args (neat-test--capture-eval-args
+                    (lambda () (neat--eval-string "(foo)" pos)))))
+        ;; (neat-eval CONN CODE SESSION FILE LINE COLUMN CALLBACK)
+        (expect (nth 4 args) :to-equal 3)   ; line
+        (expect (nth 5 args) :to-equal 3)))) ; column
+
+  (it "uses character columns, not display columns (tabs count as one)"
+    (with-temp-buffer
+      (insert "\t(foo)")
+      (goto-char (point-min))
+      (let* ((args (neat-test--capture-eval-args
+                    (lambda () (neat--eval-string "(foo)" 2)))))
+        ;; "(" is at character offset 1 -> column 2.  A display-column
+        ;; calculation would say 9 because of tab-width.
+        (expect (nth 5 args) :to-equal 2))))
+
+  (it "ignores narrowing when computing line numbers"
+    (with-temp-buffer
+      (insert "a\nb\nc\nd\n")
+      (narrow-to-region 5 7)
+      (let* ((args (neat-test--capture-eval-args
+                    (lambda () (neat--eval-string "c" 5)))))
+        ;; Without ABSOLUTE=t, narrowing would yield line 1.
+        (expect (nth 4 args) :to-equal 3))))
+
+  (it "omits line/column when no position is given"
+    (let* ((args (neat-test--capture-eval-args
+                  (lambda () (neat--eval-string "(+ 1 2)")))))
+      (expect (nth 4 args) :to-be nil)
+      (expect (nth 5 args) :to-be nil))))
+
 (provide 'neat-test)
 ;;; neat-test.el ends here

@@ -167,7 +167,7 @@ TIMEOUT defaults to 10 seconds."
             (expect (neat-connection-session conn) :not :to-be nil)
 
             (let ((id (neat-eval
-                       conn "(+ 1 2)" nil
+                       conn "(+ 1 2)" nil nil nil nil
                        (lambda (r) (push r responses)))))
               (neat-it--wait-until
                conn (lambda ()
@@ -186,7 +186,7 @@ TIMEOUT defaults to 10 seconds."
              conn (lambda () (neat-connection-session conn)) 15)
 
             (let ((id (neat-eval
-                       conn "(do (println \"hi\") :ok)" nil
+                       conn "(do (println \"hi\") :ok)" nil nil nil nil
                        (lambda (r) (push r responses)))))
               (neat-it--wait-until
                conn (lambda ()

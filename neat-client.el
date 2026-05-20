@@ -195,13 +195,20 @@ CALLBACK, if given, fires for each response message."
                (setf (neat-connection-capabilities conn) resp)
                (when callback (funcall callback resp)))))
 
-(defun neat-eval (conn code &optional session callback)
+(defun neat-eval (conn code
+                       &optional session file line column callback)
   "Send an `eval' op on CONN to run CODE.
 SESSION defaults to the connection's current session, set by
-`neat-clone-session'.  CALLBACK is called for each response."
+`neat-clone-session'.  FILE, LINE, and COLUMN are optional source-
+location metadata the server uses to attribute file/line info to
+errors and other diagnostics; LINE and COLUMN are 1-indexed.
+CALLBACK is called for each response."
   (let* ((sess (or session (neat-connection-session conn)))
          (msg `((op . "eval") (code . ,code)
-                ,@(when sess `((session . ,sess))))))
+                ,@(when sess `((session . ,sess)))
+                ,@(when file `((file . ,file)))
+                ,@(when line `((line . ,line)))
+                ,@(when column `((column . ,column))))))
     (neat-send conn msg callback)))
 
 (defun neat-load-file (conn file-contents
