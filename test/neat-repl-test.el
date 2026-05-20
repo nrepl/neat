@@ -81,6 +81,31 @@
        '(("id" . "1") ("value" . "nil") ("status" "done")))
       (expect neat-repl--current-ns :to-equal "stays"))))
 
+(describe "neat-repl--handle-need-input"
+  (it "reads input from the minibuffer and sends it via the stdin op"
+    (let ((conn (neat-connection--make :host "h" :port 1))
+          captured)
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) "world"))
+                ((symbol-function 'neat-stdin)
+                 (lambda (_c input &rest _) (setq captured input))))
+        (neat-repl--handle-need-input conn)
+        ;; The handler must append a trailing newline so read-line-style
+        ;; readers actually finish.
+        (expect captured :to-equal "world\n"))))
+
+  (it "interrupts the eval when the user hits C-g at the prompt"
+    (let ((conn (neat-connection--make :host "h" :port 1))
+          interrupted)
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) (signal 'quit nil)))
+                ((symbol-function 'neat-interrupt)
+                 (lambda (c &rest _) (setq interrupted c)))
+                ((symbol-function 'neat-stdin)
+                 (lambda (&rest _) (error "should not send stdin"))))
+        (neat-repl--handle-need-input conn)
+        (expect interrupted :to-be conn)))))
+
 (describe "neat-repl--handle-disconnect"
   (it "sets the dead flag on the conn's REPL buffer"
     (let* ((conn (neat-connection--make :host "h" :port 1))

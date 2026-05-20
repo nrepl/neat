@@ -224,6 +224,20 @@
           (expect (neat-bencode-get decoded "ns") :to-equal "user")
           (expect (neat-bencode-get decoded "session") :to-equal "S-7"))))))
 
+(describe "neat-stdin"
+  (it "builds a stdin op with input and session"
+    (let ((conn (neat-connection--make))
+          sent)
+      (setf (neat-connection-session conn) "S-9")
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-stdin conn "hello\n")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "op") :to-equal "stdin")
+          (expect (neat-bencode-get decoded "stdin") :to-equal "hello\n")
+          (expect (neat-bencode-get decoded "session") :to-equal "S-9"))))))
+
 (describe "neat-lookup"
   (it "builds a lookup op with sym and ns"
     (let ((conn (neat-connection--make))

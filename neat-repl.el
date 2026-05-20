@@ -266,8 +266,23 @@ on the same dead connection are no-ops."
       (when ex
         (comint-output-filter
          proc (propertize (format "%s\n" ex) 'face 'neat-repl-error)))
+      (when (and (member "need-input" status)
+                 neat-current-connection
+                 (neat-connection-live-p neat-current-connection))
+        (neat-repl--handle-need-input neat-current-connection))
       (when (member "done" status)
         (comint-output-filter proc (neat-repl--prompt))))))
+
+(defun neat-repl--handle-need-input (conn)
+  "Prompt the user for a line of input and ship it to CONN via the `stdin' op.
+Server-side reads (`read-line', `input', ...) trigger a `need-input'
+status response that pauses the eval until the client replies with a
+`stdin' op.  A trailing newline is appended so `read-line'-style readers
+finish.  `C-g' at the prompt interrupts the eval instead."
+  (condition-case nil
+      (let ((input (read-string "stdin: ")))
+        (neat-stdin conn (concat input "\n")))
+    (quit (neat-interrupt conn))))
 
 (defun neat-repl-interrupt ()
   "Send an `interrupt' op to the REPL's connection."

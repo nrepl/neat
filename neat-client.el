@@ -251,6 +251,24 @@ to errors and other diagnostics."
                 ,@(when session `((session . ,session))))))
     (neat-send conn msg callback)))
 
+(defun neat-stdin (conn input &rest plist)
+  "Send a `stdin' op on CONN delivering INPUT to a paused eval.
+
+Servers send a response with `status: (\"need-input\")' when the
+running code reads from standard input.  The client replies with a
+`stdin' op whose `stdin' field carries the text -- including any
+trailing newline the reader is waiting on.
+
+PLIST is a property list of optional fields:
+  :session   session id; defaults to the connection's current session.
+  :callback  function called for each response."
+  (let* ((session  (or (plist-get plist :session)
+                       (neat-connection-session conn)))
+         (callback (plist-get plist :callback))
+         (msg `((op . "stdin") (stdin . ,input)
+                ,@(when session `((session . ,session))))))
+    (neat-send conn msg callback)))
+
 (defun neat-interrupt (conn &optional session interrupt-id callback)
   "Send an `interrupt' op on CONN.
 SESSION defaults to the connection's current session.  INTERRUPT-ID,

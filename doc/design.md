@@ -41,9 +41,9 @@ consume just the parts they need.
 - `neat-bencode.el`: wire format codec. Pure functions, no I/O, no
   other module dependencies.
 - `neat-client.el`: TCP connection, request dispatch, the standard
-  nREPL ops (`describe`, `clone`, `eval`, `load-file`, `interrupt`,
-  `close`, `completions`, `lookup`). Depends only on `neat-bencode`.
-  UI-agnostic.
+  nREPL ops (`describe`, `clone`, `eval`, `load-file`, `stdin`,
+  `interrupt`, `close`, `completions`, `lookup`). Depends only on
+  `neat-bencode`. UI-agnostic.
 - `neat-repl.el`: comint-derived REPL buffer. Depends on
   `neat-client`.
 - `neat.el`: entry point, customisation group, `neat-mode` minor
