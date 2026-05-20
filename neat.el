@@ -4,7 +4,7 @@
 
 ;; Author: Bozhidar Batsov <bozhidar@batsov.dev>
 ;; URL: https://github.com/nrepl/neat
-;; Version: 0.0.1
+;; Version: 0.1.0
 ;; Package-Requires: ((emacs "28.2"))
 ;; Keywords: languages, tools
 ;; SPDX-License-Identifier: GPL-3.0-or-later

@@ -17,9 +17,12 @@ This is an early, experimental project. Expect rough edges.
 
 ## Status
 
-Pre-alpha. The first cut establishes the project skeleton, a bencode
-codec, the wire protocol plumbing, and a basic comint-based REPL. No
-release yet.
+0.1.0 is the first tagged release. The codec, async dispatch, comint
+REPL, and source-buffer minor mode are all in place; eldoc, CAPF,
+xref find-definition, doc-lookup, namespace-aware eval, and stdin
+handling work against any conformant server. See
+[`CHANGELOG.md`](CHANGELOG.md) for the full inventory. Expect rough
+edges - this is the start of the road, not the end.
 
 ## Project context
 
@@ -49,27 +52,47 @@ strands:
 
 ## Installation
 
-`neat` isn't on MELPA yet - that's an item on the road to 0.1. In the
-meantime, the easiest path is `package-vc-install` on Emacs 29+:
+`neat` isn't on MELPA yet. In the meantime the snippets below track
+the `main` branch; to pin to a tagged release, swap `:branch "main"`
+for `:rev "v0.1.0"` (with `package-vc-install`) or `:branch "v0.1.0"`
+(with `straight.el`). Latest tag: `v0.1.0`.
+
+Easiest path - `package-vc-install` on Emacs 29+:
 
 ```elisp
+;; latest from main
 (package-vc-install
  '(neat :url "https://github.com/nrepl/neat" :branch "main"))
+
+;; pinned to a release
+(package-vc-install
+ '(neat :url "https://github.com/nrepl/neat" :rev "v0.1.0"))
 ```
 
 On Emacs 30+ with [`use-package`](https://github.com/jwiegley/use-package):
 
 ```elisp
+;; latest from main
 (use-package neat
   :vc (:url "https://github.com/nrepl/neat" :branch "main")
+  :commands (neat neat-mode))
+
+;; pinned to a release
+(use-package neat
+  :vc (:url "https://github.com/nrepl/neat" :rev "v0.1.0")
   :commands (neat neat-mode))
 ```
 
 With [`straight.el`](https://github.com/radian-software/straight.el):
 
 ```elisp
+;; latest from main
 (straight-use-package
  '(neat :type git :host github :repo "nrepl/neat"))
+
+;; pinned to a release
+(straight-use-package
+ '(neat :type git :host github :repo "nrepl/neat" :branch "v0.1.0"))
 ```
 
 Or combined with `use-package`:

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-20
+
 ### Added
 
 - `neat-load-file` library op and `neat-load-buffer-file` interactive command (bound to `C-c C-l`). Uses the standard nREPL `load-file` op, which carries the buffer's path and filename so the server can attribute file and line numbers to errors. Distinct from `neat-eval-buffer`, which still ships the buffer as a plain `eval`.
