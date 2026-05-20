@@ -342,15 +342,34 @@ bencode messages as it can."
     (neat-client--drain conn)))
 
 (defun neat-client--drain (conn)
-  "Decode and dispatch as many complete bencode messages from CONN as possible."
-  (let (decoded)
-    (while (setq decoded
-                 (neat-bencode-decode (neat-connection-recv-buffer conn)))
-      (let ((message (car decoded))
-            (next-idx (cdr decoded)))
-        (setf (neat-connection-recv-buffer conn)
-              (substring (neat-connection-recv-buffer conn) next-idx))
-        (neat-client--dispatch conn message)))))
+  "Decode and dispatch as many complete bencode messages from CONN as possible.
+
+Malformed bencode signals `neat-bencode-error', which would otherwise
+propagate up out of the process filter and silently kill the cycle.
+We catch it here, log the offending bytes via the message log, and
+clear the recv buffer -- the protocol state is unrecoverable past
+the bad message, but at least the filter survives.  As elsewhere,
+`debug-on-error' steps the guard aside so the bug is visible during
+interactive debugging."
+  (condition-case-unless-debug err
+      (let (decoded)
+        (while (setq decoded
+                     (neat-bencode-decode
+                      (neat-connection-recv-buffer conn)))
+          (let ((message (car decoded))
+                (next-idx (cdr decoded)))
+            (setf (neat-connection-recv-buffer conn)
+                  (substring (neat-connection-recv-buffer conn) next-idx))
+            (neat-client--dispatch conn message))))
+    (neat-bencode-error
+     (neat-client--log conn :in (list 'malformed
+                                      (neat-connection-recv-buffer conn)
+                                      err))
+     (setf (neat-connection-recv-buffer conn) (unibyte-string))
+     (message "neat: dropped malformed bencode from %s:%s (%S)"
+              (neat-connection-host conn)
+              (neat-connection-port conn)
+              err))))
 
 (defun neat-client--dispatch (conn message)
   "Look up MESSAGE's callback in CONN and invoke it.

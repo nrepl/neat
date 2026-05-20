@@ -68,6 +68,22 @@
       ;; If we got here without throwing, we're good.
       (expect t :to-be-truthy)))
 
+  (it "shields the filter from malformed bencode (production semantics)"
+    ;; A stray `e' is the simplest malformed input: `neat-bencode-decode'
+    ;; signals `neat-bencode-error' on it.  The drain has to catch that
+    ;; or the filter cycle dies silently.
+    (let ((conn (neat-connection--make))
+          (debug-on-error nil))
+      (expect (neat-client-test--push-bytes conn "e") :not :to-throw)
+      ;; And after dropping the bad bytes, a subsequent good message
+      ;; still dispatches normally.
+      (let ((got nil))
+        (puthash "1" (lambda (m) (push m got))
+                 (neat-connection-pending conn))
+        (neat-client-test--push-bytes
+         conn (neat-bencode-encode '(("id" . "1") ("value" . "ok"))))
+        (expect (length got) :to-equal 1))))
+
   (it "shields the filter from a buggy callback (production semantics)"
     ;; The dispatch wraps callbacks in `condition-case-unless-debug',
     ;; which deliberately steps aside under `debug-on-error' so the
