@@ -200,7 +200,7 @@ Searches upward from DIR (default: the current buffer's directory)."
 The file is whatever `neat-port-file-name' names; search starts from
 DIR (default: the current buffer's directory).  Unreadable, empty, or
 non-numeric files are treated as \"not discovered\" and return nil."
-  (when-let ((path (neat-discover-port-file dir)))
+  (when-let* ((path (neat-discover-port-file dir)))
     (condition-case nil
         (with-temp-buffer
           (insert-file-contents path)
