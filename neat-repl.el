@@ -93,6 +93,7 @@ to refuse sending and message the user instead.")
 (declare-function neat-completion-at-point "neat" ())
 (declare-function neat-eldoc-function "neat" (callback &rest _ignored))
 (declare-function neat--xref-backend "neat" ())
+(declare-function neat--mode-line-info "neat" ())
 
 (defvar neat-repl-mode-map
   (let ((map (make-sparse-keymap)))
@@ -113,6 +114,11 @@ to refuse sending and message the user instead.")
   (setq-local comint-input-sender #'neat-repl--input-sender)
   (setq-local comint-use-prompt-regexp nil)
   (setq-local comint-scroll-show-maximum-output t)
+  ;; Override the inherited ":run" comint chatter -- our pipe process
+  ;; says nothing about the actual connection state.
+  (setq-local mode-line-process
+              '(:eval (let ((info (neat--mode-line-info)))
+                        (if info (concat " " info) ""))))
   (when neat-repl-history-file
     (setq-local comint-input-ring-file-name neat-repl-history-file)
     (setq-local comint-input-ring-size neat-repl-history-size)

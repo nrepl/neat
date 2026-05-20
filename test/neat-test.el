@@ -229,5 +229,26 @@ POS is a 1-indexed buffer position."
             (expect loc :not :to-be nil))
         (delete-file tmp)))))
 
+(describe "neat--mode-line-info"
+  (it "returns nil when no connection is active"
+    (let ((neat-default-connection nil))
+      (with-temp-buffer
+        (expect (neat--mode-line-info) :to-be nil))))
+
+  (it "returns [host:port] for a live connection"
+    (let* ((proc (make-pipe-process :name "neat-test-ml-live" :noquery t))
+           (conn (neat-connection--make :host "h" :port 42 :process proc))
+           (neat-default-connection conn))
+      (unwind-protect
+          (expect (neat--mode-line-info) :to-equal "[h:42]")
+        (when (process-live-p proc) (delete-process proc)))))
+
+  (it "returns [closed] for a connection whose process is dead"
+    (let* ((proc (make-pipe-process :name "neat-test-ml-dead" :noquery t))
+           (conn (neat-connection--make :host "h" :port 42 :process proc))
+           (neat-default-connection conn))
+      (delete-process proc)
+      (expect (neat--mode-line-info) :to-equal "[closed]"))))
+
 (provide 'neat-test)
 ;;; neat-test.el ends here

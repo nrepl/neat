@@ -514,6 +514,20 @@ in the current buffer, otherwise nil so the next backend gets a turn."
     (list (xref-make identifier location))))
 
 
+;;;; Mode-line indicator
+
+(defun neat--mode-line-info ()
+  "Short connection summary for the mode line, or nil.
+Returns `[host:port]' for a live connection, `[closed]' for a dead
+one, or nil when no connection is reachable from the current buffer.
+The caller is responsible for any surrounding whitespace."
+  (when-let* ((conn (neat-active-connection)))
+    (if (neat-connection-live-p conn)
+        (format "[%s:%d]" (neat-connection-host conn)
+                (neat-connection-port conn))
+      "[closed]")))
+
+
 ;;;; Minor mode
 
 (defvar neat-mode-map
@@ -535,7 +549,8 @@ in the current buffer, otherwise nil so the next backend gets a turn."
 
 Bindings:
 \\{neat-mode-map}"
-  :lighter " neat"
+  :lighter (:eval (let ((info (neat--mode-line-info)))
+                    (if info (concat " neat" info) " neat")))
   :keymap neat-mode-map
   :group 'neat
   (cond
