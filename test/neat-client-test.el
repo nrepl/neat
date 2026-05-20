@@ -262,6 +262,23 @@
               (expect neat-connections :to-equal nil)))
         (when (process-live-p proc) (delete-process proc)))))
 
+  (it "runs neat-disconnect-functions when a connection's process dies"
+    (let ((neat-connections nil)
+          (got '())
+          (proc (make-pipe-process :name "neat-test-pipe-hook"
+                                   :noquery t)))
+      (unwind-protect
+          (let ((neat-disconnect-functions
+                 (list (lambda (c) (push c got)))))
+            (cl-letf (((symbol-function 'open-network-stream)
+                       (lambda (_n _b _h _p &rest _) proc)))
+              (let ((conn (neat-connect "h" 1)))
+                (neat-disconnect conn)
+                ;; The sentinel runs synchronously when delete-process
+                ;; closes a pipe process.
+                (expect got :to-equal (list conn)))))
+        (when (process-live-p proc) (delete-process proc)))))
+
   (it "demotes neat-default-connection when its target disconnects"
     (let ((neat-connections nil)
           (neat-default-connection nil)

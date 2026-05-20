@@ -83,6 +83,11 @@ in a language with very different bracketing rules.")
 (defvar-local neat-repl--current-ns nil
   "Most-recent namespace reported by the server for this buffer.")
 
+(defvar-local neat-repl--connection-dead nil
+  "Non-nil once the buffer's connection has died.
+Set by `neat-repl--handle-disconnect'.  The input sender consults this
+to refuse sending and message the user instead.")
+
 ;; Forward declarations so neat-repl-mode can hook these without
 ;; requiring neat.el (which depends on neat-repl.el, not the other way).
 (declare-function neat-completion-at-point "neat" ())
@@ -196,6 +201,9 @@ Otherwise insert a newline so the user can keep typing the form."
          (conn neat-current-connection)
          (trimmed (string-trim-right (substring-no-properties input))))
     (cond
+     ((or neat-repl--connection-dead
+          (and conn (not (neat-connection-live-p conn))))
+      (message "Neat: connection is closed"))
      ((not conn)
       (message "Neat: no connection in this buffer"))
      ((string-empty-p trimmed)
@@ -207,6 +215,24 @@ Otherwise insert a newline so the user can keep typing the form."
                    (when (buffer-live-p buffer)
                      (with-current-buffer buffer
                        (neat-repl--render-response resp)))))))))
+
+(defun neat-repl--handle-disconnect (conn)
+  "Mark CONN's REPL buffer as closed, if it has one.
+Run from `neat-disconnect-functions'.  Idempotent: subsequent calls
+on the same dead connection are no-ops."
+  (when-let* ((buf (neat-repl-buffer-for conn))
+              ((buffer-live-p buf)))
+    (with-current-buffer buf
+      (unless neat-repl--connection-dead
+        (setq neat-repl--connection-dead t)
+        (let ((proc (get-buffer-process (current-buffer))))
+          (when (process-live-p proc)
+            (comint-output-filter
+             proc (propertize ";; connection closed\n"
+                              'face 'neat-repl-error))))))))
+
+;;;###autoload
+(add-hook 'neat-disconnect-functions #'neat-repl--handle-disconnect)
 
 (defun neat-repl--render-response (resp)
   "Insert the user-visible parts of nREPL response RESP into the buffer."

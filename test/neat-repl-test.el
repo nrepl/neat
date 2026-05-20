@@ -81,4 +81,32 @@
        '(("id" . "1") ("value" . "nil") ("status" "done")))
       (expect neat-repl--current-ns :to-equal "stays"))))
 
+(describe "neat-repl--handle-disconnect"
+  (it "sets the dead flag on the conn's REPL buffer"
+    (let* ((conn (neat-connection--make :host "h" :port 1))
+           (buf (get-buffer-create (neat-repl-buffer-name conn))))
+      (unwind-protect
+          (with-current-buffer buf
+            ;; Pretend we're in neat-repl-mode without booting comint.
+            (setq-local neat-repl--connection-dead nil)
+            (neat-repl--handle-disconnect conn)
+            (expect neat-repl--connection-dead :to-be-truthy))
+        (kill-buffer buf))))
+
+  (it "is idempotent on repeated calls"
+    (let* ((conn (neat-connection--make :host "h" :port 2))
+           (buf (get-buffer-create (neat-repl-buffer-name conn))))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local neat-repl--connection-dead nil)
+            (expect (progn (neat-repl--handle-disconnect conn)
+                           (neat-repl--handle-disconnect conn)
+                           t)
+                    :to-be-truthy))
+        (kill-buffer buf))))
+
+  (it "is a no-op when no REPL buffer exists for the connection"
+    (let ((conn (neat-connection--make :host "h" :port 999999)))
+      (expect (neat-repl--handle-disconnect conn) :not :to-throw))))
+
 ;;; neat-repl-test.el ends here

@@ -45,6 +45,15 @@ Set automatically in `neat-repl-mode' buffers and available for any
 other buffer that wants explicit routing.  Takes precedence over
 `neat-default-connection'.")
 
+(defvar neat-disconnect-functions nil
+  "Abnormal hook run when a connection dies.
+Each function is called with one argument, the dead `neat-connection'.
+Fires from the process sentinel exactly once per process death,
+regardless of whether the disconnect was user-initiated or caused by
+the server going away.  Use to update buffers that reference the
+connection (the REPL buffer adds a `connection closed' marker this
+way).")
+
 (defun neat-active-connection ()
   "Return the active connection for the current buffer, or nil.
 Returns `neat-current-connection' when set buffer-locally, else
@@ -393,14 +402,20 @@ pruned afterwards."
 (defun neat-client--sentinel (proc _event)
   "Sentinel for nREPL connection PROC.
 Drops the connection from `neat-connections', demotes the default if
-needed, and notifies any pending callbacks."
+needed, notifies any pending callbacks, and runs
+`neat-disconnect-functions'."
   (unless (process-live-p proc)
     (let ((conn (process-get proc 'neat-connection)))
       (when conn
         (setq neat-connections (delq conn neat-connections))
         (when (eq neat-default-connection conn)
           (setq neat-default-connection (car neat-connections)))
-        (neat-client--flush-pending conn "connection closed")))))
+        ;; Order matters: pending callbacks see their synthesized
+        ;; `connection closed' response before the global disconnect
+        ;; hook updates buffers built on top.
+        (neat-client--flush-pending conn "connection closed")
+        (with-demoted-errors "neat: disconnect hook: %S"
+          (run-hook-with-args 'neat-disconnect-functions conn))))))
 
 (defun neat-client--flush-pending (conn reason)
   "Notify every pending callback on CONN that the connection is gone.
