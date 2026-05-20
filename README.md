@@ -147,6 +147,7 @@ Bindings:
 | `C-c C-l` | `neat-load-buffer-file` |
 | `C-c C-z` | `neat-switch-to-repl`  |
 | `C-c C-k` | `neat-interrupt-eval`  |
+| `C-c M-n` | `neat-set-ns`          |
 | `M-.`     | `xref-find-definitions` |
 | `M-,`     | `xref-go-back`         |
 
@@ -164,6 +165,13 @@ is defined and jumps there. `M-,` pops back through the standard
 xref stack. Sources behind URLs we can't resolve locally (`jar:...`,
 `http:...`, ...) yield no result; we don't try to extract files from
 jars.
+
+`neat-set-ns` (`C-c M-n`) sets the buffer-local namespace `neat-ns`,
+which is sent as the `ns` field on every `eval` op from this buffer.
+Set it explicitly per buffer, in a major-mode hook, or via
+`.dir-locals.el`. For languages where the namespace is declared in
+the source (Clojure's `(ns foo.bar)`, etc.), swap in a parser via
+`neat-buffer-ns-function` -- the default just returns `neat-ns`.
 
 ## Design
 

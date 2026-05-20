@@ -133,6 +133,32 @@ with `neat-mode' enabled will use it automatically."
 
 ;;;; Source-buffer evaluation
 
+(defvar-local neat-ns nil
+  "Namespace to send with `eval' ops from this buffer, or nil.
+The default `neat-buffer-ns-function' just returns this.  Set it
+explicitly via `neat-set-ns', in a major-mode hook, or via
+`.dir-locals.el' for project-wide defaults.")
+
+(defun neat-buffer-ns-default ()
+  "Default `neat-buffer-ns-function': return the buffer-local `neat-ns'."
+  neat-ns)
+
+(defvar neat-buffer-ns-function #'neat-buffer-ns-default
+  "Function (no args) returning the ns for the current buffer, or nil.
+The default returns `neat-ns'.  Replace with a parser that reads the
+buffer for languages where the namespace is declared in source (for
+example, a `(ns foo.bar)' form in Clojure).  Whatever is returned
+becomes the `ns' field on the `eval' op.")
+
+(defun neat-set-ns (ns)
+  "Set the buffer-local namespace `neat-ns' to NS for subsequent evaluations.
+Empty input clears the override."
+  (interactive
+   (list (read-string (format-prompt "Namespace" neat-ns)
+                      nil nil neat-ns)))
+  (setq neat-ns (if (string-empty-p ns) nil ns))
+  (message "Neat: ns is %s" (or neat-ns "(unset)")))
+
 (defun neat--require-connection ()
   "Return the active connection, or signal a user-error."
   (or (neat-active-connection)
@@ -155,7 +181,8 @@ POS, if given, is a buffer position used to compute file/line/column
 metadata for the `eval' op so the server can attribute errors to the
 right source location.  Line and column are 1-indexed; line numbers
 ignore narrowing, and the column is a character offset (tabs count
-as one column), matching the convention used by Lisp readers."
+as one column), matching the convention used by Lisp readers.  The
+namespace is whatever `neat-buffer-ns-function' returns."
   (let* ((conn (neat--require-connection))
          (file buffer-file-name)
          (line (and pos (line-number-at-pos pos t)))
@@ -164,9 +191,11 @@ as one column), matching the convention used by Lisp readers."
                         (save-restriction
                           (widen)
                           (goto-char pos)
-                          (1+ (- pos (line-beginning-position))))))))
-    (neat-eval conn code nil file line column
-               (lambda (resp) (neat--render-into-repl conn resp)))))
+                          (1+ (- pos (line-beginning-position)))))))
+         (ns (funcall neat-buffer-ns-function)))
+    (neat-eval conn code
+               :file file :line line :column column :ns ns
+               :callback (lambda (resp) (neat--render-into-repl conn resp)))))
 
 (defun neat-eval-last-sexp ()
   "Evaluate the sexp before point."
@@ -217,9 +246,10 @@ not necessarily resolvable on the server side."
                     (widen)
                     (buffer-substring-no-properties (point-min) (point-max)))))
     (neat-load-file
-     conn contents buffer-file-name
-     (file-name-nondirectory buffer-file-name) nil
-     (lambda (resp) (neat--render-into-repl conn resp)))))
+     conn contents
+     :file-path buffer-file-name
+     :file-name (file-name-nondirectory buffer-file-name)
+     :callback (lambda (resp) (neat--render-into-repl conn resp)))))
 
 (defun neat-switch-to-repl ()
   "Pop to the REPL buffer for the active connection."
@@ -495,6 +525,7 @@ in the current buffer, otherwise nil so the next backend gets a turn."
     (define-key map (kbd "C-c C-l") #'neat-load-buffer-file)
     (define-key map (kbd "C-c C-z") #'neat-switch-to-repl)
     (define-key map (kbd "C-c C-k") #'neat-interrupt-eval)
+    (define-key map (kbd "C-c M-n") #'neat-set-ns)
     map)
   "Keymap for `neat-mode'.")
 

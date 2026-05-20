@@ -120,13 +120,13 @@ POS is a 1-indexed buffer position."
     (expect (neat--lispy-highlight-arglist "[a b]" nil)
             :to-equal "[a b]")))
 
-(defun neat-test--capture-eval-args (body-fn)
-  "Run BODY-FN with `neat-eval' stubbed; return the arglist it was called with."
+(defun neat-test--capture-eval-plist (body-fn)
+  "Run BODY-FN with `neat-eval' stubbed; return the plist it was called with."
   (let (captured)
     (cl-letf (((symbol-function 'neat--require-connection)
                (lambda () 'stub-conn))
               ((symbol-function 'neat-eval)
-               (lambda (&rest args) (setq captured args))))
+               (lambda (_conn _code &rest plist) (setq captured plist))))
       (funcall body-fn))
     captured))
 
@@ -134,39 +134,50 @@ POS is a 1-indexed buffer position."
   (it "computes 1-indexed line/column for the start of the form"
     (with-temp-buffer
       (insert "line1\nline2\n  (foo)\n")
-      (goto-char (point-min))
       ;; Position of the open paren on line 3: after "line1\nline2\n  ".
       (let* ((pos (1+ (length "line1\nline2\n  ")))
-             (args (neat-test--capture-eval-args
-                    (lambda () (neat--eval-string "(foo)" pos)))))
-        ;; (neat-eval CONN CODE SESSION FILE LINE COLUMN CALLBACK)
-        (expect (nth 4 args) :to-equal 3)   ; line
-        (expect (nth 5 args) :to-equal 3)))) ; column
+             (plist (neat-test--capture-eval-plist
+                     (lambda () (neat--eval-string "(foo)" pos)))))
+        (expect (plist-get plist :line) :to-equal 3)
+        (expect (plist-get plist :column) :to-equal 3))))
 
   (it "uses character columns, not display columns (tabs count as one)"
     (with-temp-buffer
       (insert "\t(foo)")
-      (goto-char (point-min))
-      (let* ((args (neat-test--capture-eval-args
+      (let ((plist (neat-test--capture-eval-plist
                     (lambda () (neat--eval-string "(foo)" 2)))))
         ;; "(" is at character offset 1 -> column 2.  A display-column
         ;; calculation would say 9 because of tab-width.
-        (expect (nth 5 args) :to-equal 2))))
+        (expect (plist-get plist :column) :to-equal 2))))
 
   (it "ignores narrowing when computing line numbers"
     (with-temp-buffer
       (insert "a\nb\nc\nd\n")
       (narrow-to-region 5 7)
-      (let* ((args (neat-test--capture-eval-args
+      (let ((plist (neat-test--capture-eval-plist
                     (lambda () (neat--eval-string "c" 5)))))
         ;; Without ABSOLUTE=t, narrowing would yield line 1.
-        (expect (nth 4 args) :to-equal 3))))
+        (expect (plist-get plist :line) :to-equal 3))))
 
   (it "omits line/column when no position is given"
-    (let* ((args (neat-test--capture-eval-args
+    (let ((plist (neat-test--capture-eval-plist
                   (lambda () (neat--eval-string "(+ 1 2)")))))
-      (expect (nth 4 args) :to-be nil)
-      (expect (nth 5 args) :to-be nil))))
+      (expect (plist-get plist :line) :to-be nil)
+      (expect (plist-get plist :column) :to-be nil)))
+
+  (it "passes the namespace from neat-buffer-ns-function"
+    (with-temp-buffer
+      (setq neat-ns "my.ns")
+      (let ((plist (neat-test--capture-eval-plist
+                    (lambda () (neat--eval-string "(+ 1 2)")))))
+        (expect (plist-get plist :ns) :to-equal "my.ns"))))
+
+  (it "honours a custom neat-buffer-ns-function override"
+    (let ((neat-buffer-ns-function (lambda () "derived.ns")))
+      (with-temp-buffer
+        (let ((plist (neat-test--capture-eval-plist
+                      (lambda () (neat--eval-string "(+ 1 2)")))))
+          (expect (plist-get plist :ns) :to-equal "derived.ns"))))))
 
 (describe "neat--lookup-file-path"
   (it "returns plain paths unchanged"

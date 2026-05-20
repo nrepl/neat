@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `neat-load-file` library op and `neat-load-buffer-file` interactive command (bound to `C-c C-l`). Uses the standard nREPL `load-file` op, which carries the buffer's path and filename so the server can attribute file and line numbers to errors. Distinct from `neat-eval-buffer`, which still ships the buffer as a plain `eval`.
 - `neat-eval` now accepts optional `file`, `line`, and `column` arguments. The source-buffer eval commands (`neat-eval-last-sexp`, `neat-eval-defun`, `neat-eval-region`, `neat-eval-buffer`) compute these from the buffer and send them, so the server can point error messages at the actual source location instead of an anonymous string.
 - xref backend in `neat-mode` and `neat-repl-mode` buffers. `M-.` (`xref-find-definitions`) asks the server's `lookup` op where the symbol at point is defined and jumps there; `M-,` pops back. Customize the request timeout via `neat-lookup-timeout`. Sources behind URLs we can't resolve locally (`jar:...`, `http:...`, ...) yield no result; jar extraction and remote-path translation are out of scope.
+- Buffer-local namespace for source-buffer evaluations: `neat-ns` (defvar-local) and `neat-set-ns` interactive command bound to `C-c M-n`. The namespace is sent as the `ns` field on `eval` ops, so the server runs the code in the right place. `neat-buffer-ns-function` is the swappable seam for languages where the namespace can be derived from the buffer (e.g., parsing a `(ns foo.bar)` form); the default just returns `neat-ns`.
 - Initial project skeleton with Eldev and Buttercup.
 - `neat-bencode` module: encode/decode for the bencode wire format used by nREPL.
 - `neat-client` module: connection management, request dispatch, and the core nREPL ops (`describe`, `clone`, `eval`, `interrupt`, `close`).
@@ -31,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `neat-eval` and `neat-load-file` now take a property list of options after the required positional args, instead of stacking more and more positional `&optional`s. Migration: `(neat-eval conn code nil callback)` becomes `(neat-eval conn code :callback callback)`; `(neat-load-file conn contents file-path file-name)` becomes `(neat-load-file conn contents :file-path path :file-name name)`. Both ops accept `:session` and `:callback`; `eval` additionally accepts `:ns`, `:file`, `:line`, `:column`.
 - Connection routing primitives (`neat-default-connection`, `neat-current-connection`, `neat-active-connection`) moved from `neat.el` to `neat-client.el`, where they belong as a library-level concern. The REPL buffer's `neat-repl-connection` defvar-local has been removed; the REPL now sets `neat-current-connection` directly, unifying the routing model across all buffer types.
 
 ### Removed

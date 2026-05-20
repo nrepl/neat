@@ -201,11 +201,11 @@ Otherwise insert a newline so the user can keep typing the form."
       (neat-repl--insert-prompt))
      (t
       (neat-eval
-       conn trimmed nil nil nil nil
-       (lambda (resp)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (neat-repl--render-response resp)))))))))
+       conn trimmed
+       :callback (lambda (resp)
+                   (when (buffer-live-p buffer)
+                     (with-current-buffer buffer
+                       (neat-repl--render-response resp)))))))))
 
 (defun neat-repl--render-response (resp)
   "Insert the user-visible parts of nREPL response RESP into the buffer."

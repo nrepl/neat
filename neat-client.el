@@ -195,34 +195,51 @@ CALLBACK, if given, fires for each response message."
                (setf (neat-connection-capabilities conn) resp)
                (when callback (funcall callback resp)))))
 
-(defun neat-eval (conn code
-                       &optional session file line column callback)
+(defun neat-eval (conn code &rest plist)
   "Send an `eval' op on CONN to run CODE.
-SESSION defaults to the connection's current session, set by
-`neat-clone-session'.  FILE, LINE, and COLUMN are optional source-
-location metadata the server uses to attribute file/line info to
-errors and other diagnostics; LINE and COLUMN are 1-indexed.
-CALLBACK is called for each response."
-  (let* ((sess (or session (neat-connection-session conn)))
+
+PLIST is a property list of optional fields:
+  :session   session id; defaults to the connection's current session.
+  :ns        namespace to evaluate in.
+  :file      source file path.
+  :line      1-indexed line number where the code starts.
+  :column    1-indexed column number where the code starts.
+  :callback  function called for each response."
+  (let* ((session  (or (plist-get plist :session)
+                       (neat-connection-session conn)))
+         (ns       (plist-get plist :ns))
+         (file     (plist-get plist :file))
+         (line     (plist-get plist :line))
+         (column   (plist-get plist :column))
+         (callback (plist-get plist :callback))
          (msg `((op . "eval") (code . ,code)
-                ,@(when sess `((session . ,sess)))
+                ,@(when session `((session . ,session)))
+                ,@(when ns `((ns . ,ns)))
                 ,@(when file `((file . ,file)))
                 ,@(when line `((line . ,line)))
                 ,@(when column `((column . ,column))))))
     (neat-send conn msg callback)))
 
-(defun neat-load-file (conn file-contents
-                            &optional file-path file-name session callback)
+(defun neat-load-file (conn file-contents &rest plist)
   "Send a `load-file' op on CONN carrying FILE-CONTENTS.
-FILE-PATH and FILE-NAME are optional metadata the server uses to
-attribute file/line info to errors and other diagnostics.  SESSION
-defaults to the connection's current session.  CALLBACK, if given,
-fires for each response."
-  (let* ((sess (or session (neat-connection-session conn)))
+
+PLIST is a property list of optional fields:
+  :file-path  client-side path the contents come from.
+  :file-name  display name (typically the basename).
+  :session    session id; defaults to the connection's current session.
+  :callback   function called for each response.
+
+FILE-PATH and FILE-NAME let the server attribute file and line info
+to errors and other diagnostics."
+  (let* ((file-path (plist-get plist :file-path))
+         (file-name (plist-get plist :file-name))
+         (session   (or (plist-get plist :session)
+                        (neat-connection-session conn)))
+         (callback  (plist-get plist :callback))
          (msg `((op . "load-file") (file . ,file-contents)
                 ,@(when file-path `((file-path . ,file-path)))
                 ,@(when file-name `((file-name . ,file-name)))
-                ,@(when sess `((session . ,sess))))))
+                ,@(when session `((session . ,session))))))
     (neat-send conn msg callback)))
 
 (defun neat-interrupt (conn &optional session interrupt-id callback)
