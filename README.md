@@ -200,6 +200,101 @@ Set it explicitly per buffer, in a major-mode hook, or via
 the source (Clojure's `(ns foo.bar)`, etc.), swap in a parser via
 `neat-buffer-ns-function` -- the default just returns `neat-ns`.
 
+## Troubleshooting
+
+### Eldoc, completion, or `M-.` quietly do nothing
+
+The CAPF, eldoc backend, and xref backend all rely on the standard
+`completions` and `lookup` nREPL ops. If your server doesn't implement
+them, our sync helpers return nil and we defer silently - that's by
+design, a language-agnostic client can't assume anything.
+
+Diagnosis: turn on the message log (next-to-last entry below) and
+look for `unknown-op` in the status. Fix: install whatever your
+server uses to provide those ops. Clojure ships them as `cider-nrepl`
+middleware; Basilisp ships them in-tree; Babashka has its own story.
+
+### Evaluation just sits there
+
+Three usual suspects:
+
+- The eval is reading from stdin. Look at the minibuffer for a
+  `stdin:` prompt and answer it. `C-g` interrupts the read.
+- The connection died. The mode-line shows `[closed]` and a
+  `;; connection closed` line appears in the REPL buffer.
+- The eval is actually running, just slowly. `C-c C-c` in the REPL
+  (or `C-c C-k` in a source buffer) sends an `interrupt` op.
+
+### Evaluation lands in the wrong namespace
+
+By default neat sends no `ns` on `eval`, so the server uses whatever
+its current namespace is. To pin a source buffer:
+
+- `C-c M-n` (`neat-set-ns`) interactively.
+- `((eval . (setq neat-ns "myapp.core")))` in `.dir-locals.el` for a
+  project-wide default.
+- Or swap `neat-buffer-ns-function` for one that derives the ns from
+  the buffer (parsing a `(ns ...)` form, reading file metadata, etc.).
+
+### `M-x neat` doesn't autofill the port
+
+The port comes from the nearest `.nrepl-port` file walking up from
+the current buffer. Common reasons it doesn't fire:
+
+- Your server writes a different filename: set `neat-port-file-name`.
+- The file isn't on the path from the buffer to the project root.
+- You're in a buffer not visiting a file: `default-directory` is
+  used, which may not be where you expect.
+
+`M-: (neat-discover-port-file) RET` shows what neat is finding.
+
+### `M-.` doesn't jump anywhere
+
+The `lookup` op may have returned a URL we can't resolve locally -
+`jar:` paths (Clojure stdlib source inside jars), `http:` URLs
+(remote sources), and similar are skipped by design. Or the server
+simply doesn't know where the symbol lives. The message log shows
+the actual response.
+
+### Something is happening on the wire but you can't tell what
+
+`M-x neat-toggle-message-log` flips a global mirror. Both directions
+land pretty-printed in `*neat-messages*`, prefixed with `-->`
+(request), `<--` (response), or `!!!` (internal note, e.g. a dropped
+malformed message). The buffer is in `neat-message-log-mode` - `q`
+buries, `c` clears. Windows scrolled to the end auto-follow new
+entries; scroll up and the log stops chasing you.
+
+Two more knobs worth knowing:
+
+- `neat-show-message-log` pops the buffer without toggling.
+- `neat-clear-message-log` wipes it.
+- `neat-message-log-max-message-length` (default 2000) truncates each
+  message to keep huge values from making the buffer unusable.
+- `neat-message-log-max-buffer-lines` (default 5000) trims the oldest
+  entries on the fly so long sessions don't grow without bound.
+
+Customize the buffer name via `neat-message-log-buffer-name`;
+permanently enable logging with `(setq neat-log-messages t)`.
+
+### Generic Emacs debugging tools
+
+A few Emacs builtins that pair well with neat:
+
+- `M-x toggle-debug-on-quit`. With it on, hitting `C-g` during a
+  hang drops into the debugger at exactly the stuck point - very
+  useful when an eval, lookup, or completion call is wedged.
+- `M-x toggle-debug-on-error`. Surfaces signaled errors instead of
+  routing them to `*Messages*`. neat's callback dispatch uses
+  `condition-case-unless-debug`, so turning this on means buggy
+  callbacks land in the debugger rather than being swallowed by a
+  one-line `message`. See the
+  [Emacs Lisp Debugger manual](https://www.gnu.org/software/emacs/manual/html_node/elisp/Debugger.html).
+- `M-x profiler-start`, exercise the slow thing, then
+  `M-x profiler-report`. Helpful when CAPF feels laggy or an eldoc
+  lookup blocks longer than expected. See the
+  [Profiling manual](https://www.gnu.org/software/emacs/manual/html_node/elisp/Profiling.html).
+
 ## Design
 
 For the rationale behind the architecture (the module split, the
@@ -241,34 +336,6 @@ a port banner on stdout; for ones that can't or won't announce an
 OS-assigned port (let-go, currently), the entry can supply a
 `:port-fn` that pre-allocates a free port for the framework to pass
 in.
-
-### Debugging the wire
-
-When something goes wrong (eldoc not firing, an op returning a surprise
-shape, ...) the quickest way to find out is to mirror every nREPL
-message neat exchanges with the server:
-
-```
-M-x neat-toggle-message-log
-```
-
-Both directions land pretty-printed in `*neat-messages*`, prefixed with
-`-->` (request), `<--` (response), or `!!!` (internal note, e.g. a
-dropped malformed message). The buffer is in `neat-message-log-mode`
-- `q` buries, `c` clears. Windows scrolled to the end auto-follow
-new entries; scroll up and the log stops chasing you.
-
-Two more knobs worth knowing:
-
-- `neat-show-message-log` pops the buffer without toggling.
-- `neat-clear-message-log` wipes it.
-- `neat-message-log-max-message-length` (default 2000) truncates each
-  message to keep huge values from making the buffer unusable.
-- `neat-message-log-max-buffer-lines` (default 5000) trims the oldest
-  entries on the fly so long sessions don't grow without bound.
-
-Customize the buffer name via `neat-message-log-buffer-name`;
-permanently enable logging with `(setq neat-log-messages t)`.
 
 ## License
 
