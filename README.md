@@ -210,9 +210,7 @@ them, our sync helpers return nil and we defer silently - that's by
 design, a language-agnostic client can't assume anything.
 
 Diagnosis: turn on the message log (next-to-last entry below) and
-look for `unknown-op` in the status. Fix: install whatever your
-server uses to provide those ops. Clojure ships them as `cider-nrepl`
-middleware; Basilisp ships them in-tree; Babashka has its own story.
+look for `unknown-op` in the status.
 
 ### Evaluation just sits there
 
