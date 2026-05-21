@@ -253,9 +253,22 @@ M-x neat-toggle-message-log
 ```
 
 Both directions land pretty-printed in `*neat-messages*`, prefixed with
-`-->` (request) or `<--` (response). Customize the buffer name via
-`neat-message-log-buffer-name`; permanently enable with
-`(setq neat-log-messages t)`.
+`-->` (request), `<--` (response), or `!!!` (internal note, e.g. a
+dropped malformed message). The buffer is in `neat-message-log-mode`
+- `q` buries, `c` clears. Windows scrolled to the end auto-follow
+new entries; scroll up and the log stops chasing you.
+
+Two more knobs worth knowing:
+
+- `neat-show-message-log` pops the buffer without toggling.
+- `neat-clear-message-log` wipes it.
+- `neat-message-log-max-message-length` (default 2000) truncates each
+  message to keep huge values from making the buffer unusable.
+- `neat-message-log-max-buffer-lines` (default 5000) trims the oldest
+  entries on the fly so long sessions don't grow without bound.
+
+Customize the buffer name via `neat-message-log-buffer-name`;
+permanently enable logging with `(setq neat-log-messages t)`.
 
 ## License
 

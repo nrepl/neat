@@ -136,28 +136,141 @@ with `neat-toggle-message-log'."
   :type 'string
   :group 'neat)
 
+(defcustom neat-message-log-max-message-length 2000
+  "Max characters to insert per message in the log buffer.
+Messages longer than this are truncated and tagged with the original
+byte count.  Set to nil to disable truncation (slow on huge values)."
+  :type '(choice integer (const :tag "No limit" nil))
+  :group 'neat)
+
+(defcustom neat-message-log-max-buffer-lines 5000
+  "Max lines to retain in `neat-message-log-buffer-name'.
+When exceeded, the oldest entries get trimmed from the front so the
+buffer doesn't grow without bound during long sessions.  Set to nil
+to disable trimming."
+  :type '(choice integer (const :tag "No limit" nil))
+  :group 'neat)
+
+(defface neat-message-log-out
+  '((t :inherit font-lock-function-name-face))
+  "Face for outgoing-request markers in the message log."
+  :group 'neat)
+
+(defface neat-message-log-in
+  '((t :inherit font-lock-string-face))
+  "Face for incoming-response markers in the message log."
+  :group 'neat)
+
+(defface neat-message-log-note
+  '((t :inherit warning))
+  "Face for internal note entries (e.g. dropped malformed bytes)."
+  :group 'neat)
+
+(defface neat-message-log-meta
+  '((t :inherit shadow))
+  "Face for timestamp and host:port metadata in the message log."
+  :group 'neat)
+
+(defvar neat-message-log-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "c") #'neat-clear-message-log)
+    map)
+  "Keymap for `neat-message-log-mode'.")
+
+(define-derived-mode neat-message-log-mode special-mode "neat-log"
+  "Major mode for the `*neat-messages*' buffer."
+  (setq-local truncate-lines nil)
+  (setq-local buffer-undo-list t))
+
+(defun neat--message-log-buffer ()
+  "Return the message log buffer, creating and setting up its mode if needed."
+  (let ((buf (get-buffer-create neat-message-log-buffer-name)))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'neat-message-log-mode)
+        (neat-message-log-mode)))
+    buf))
+
+(defun neat--message-log-format (message)
+  "Pretty-print MESSAGE for the log, truncating past the configured limit."
+  (let ((s (with-output-to-string (pp message))))
+    (if (and neat-message-log-max-message-length
+             (> (length s) neat-message-log-max-message-length))
+        (concat (substring s 0 neat-message-log-max-message-length)
+                (format "... [truncated, %d bytes total]\n"
+                        (length s)))
+      s)))
+
+(defun neat--message-log-trim ()
+  "Trim the current buffer to `neat-message-log-max-buffer-lines'."
+  (when neat-message-log-max-buffer-lines
+    (let ((excess (- (count-lines (point-min) (point-max))
+                     neat-message-log-max-buffer-lines)))
+      (when (> excess 0)
+        (save-excursion
+          (goto-char (point-min))
+          (forward-line excess)
+          (delete-region (point-min) (point)))))))
+
+;;;###autoload
 (defun neat-toggle-message-log ()
   "Toggle `neat-log-messages' and pop to the log buffer when enabling."
   (interactive)
   (setq neat-log-messages (not neat-log-messages))
   (message "neat: message log %s" (if neat-log-messages "enabled" "disabled"))
   (when neat-log-messages
-    (display-buffer (get-buffer-create neat-message-log-buffer-name))))
+    (display-buffer (neat--message-log-buffer))))
+
+;;;###autoload
+(defun neat-show-message-log ()
+  "Pop up the message log buffer regardless of `neat-log-messages'."
+  (interactive)
+  (display-buffer (neat--message-log-buffer)))
+
+(defun neat-clear-message-log ()
+  "Wipe the message log buffer."
+  (interactive)
+  (when-let* ((buf (get-buffer neat-message-log-buffer-name)))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)))))
 
 (defun neat-client--log (conn direction message)
   "Append MESSAGE for CONN to the log buffer.
 DIRECTION is `:out' for outgoing requests, `:in' for incoming
-responses.  No-op unless `neat-log-messages' is non-nil."
+responses, or `:note' for internal entries (e.g. dropped malformed
+bytes).  No-op unless `neat-log-messages' is non-nil.  Windows showing
+the log buffer that are scrolled to the end auto-follow new entries;
+windows scrolled up are left alone."
   (when neat-log-messages
-    (with-current-buffer (get-buffer-create neat-message-log-buffer-name)
-      (goto-char (point-max))
-      (insert (format "%s %s %s:%d\n"
-                      (if (eq direction :out) "-->" "<--")
-                      (format-time-string "%H:%M:%S.%3N")
-                      (neat-connection-host conn)
-                      (neat-connection-port conn)))
-      (pp message (current-buffer))
-      (insert "\n"))))
+    (let ((buf (neat--message-log-buffer)))
+      (with-current-buffer buf
+        (let* ((inhibit-read-only t)
+               (windows (get-buffer-window-list buf nil t))
+               (following (cl-remove-if-not
+                           (lambda (w) (= (window-point w) (point-max)))
+                           windows))
+               (arrow (pcase direction
+                        (:out "-->") (:in "<--") (:note "!!!") (_ "???")))
+               (face (pcase direction
+                       (:out 'neat-message-log-out)
+                       (:in 'neat-message-log-in)
+                       (:note 'neat-message-log-note)
+                       (_ 'default))))
+          (save-excursion
+            (goto-char (point-max))
+            (insert (propertize arrow 'face face) " "
+                    (propertize (format "%s %s:%d"
+                                        (format-time-string "%H:%M:%S.%3N")
+                                        (neat-connection-host conn)
+                                        (neat-connection-port conn))
+                                'face 'neat-message-log-meta)
+                    "\n"
+                    (neat--message-log-format message)
+                    "\n")
+            (neat--message-log-trim))
+          (dolist (w following)
+            (set-window-point w (point-max))))))))
 
 
 ;;;; Sending requests
@@ -393,9 +506,9 @@ interactive debugging."
                   (substring (neat-connection-recv-buffer conn) next-idx))
             (neat-client--dispatch conn message))))
     (neat-bencode-error
-     (neat-client--log conn :in (list 'malformed
-                                      (neat-connection-recv-buffer conn)
-                                      err))
+     (neat-client--log conn :note (list 'malformed
+                                        (neat-connection-recv-buffer conn)
+                                        err))
      (setf (neat-connection-recv-buffer conn) (unibyte-string))
      (message "neat: dropped malformed bencode from %s:%s (%S)"
               (neat-connection-host conn)

@@ -384,6 +384,34 @@
         (setq neat-current-connection nil)
         (expect (neat-active-connection) :to-be nil)))))
 
+(describe "message log helpers"
+  (it "passes short messages through untruncated"
+    (let ((neat-message-log-max-message-length 1000))
+      (expect (neat--message-log-format '((foo . "bar")))
+              :to-equal (with-output-to-string (pp '((foo . "bar")))))))
+
+  (it "truncates messages longer than the limit and tags the byte count"
+    (let ((neat-message-log-max-message-length 20))
+      (let ((out (neat--message-log-format
+                  (cons 'big (make-string 500 ?x)))))
+        (expect (length out) :to-be-greater-than 20)
+        (expect out :to-match "truncated, [0-9]+ bytes total"))))
+
+  (it "respects nil (no truncation) for the message length cap"
+    (let ((neat-message-log-max-message-length nil))
+      (let ((out (neat--message-log-format (cons 'big (make-string 500 ?x)))))
+        (expect out :not :to-match "truncated"))))
+
+  (it "trims the buffer to max-buffer-lines"
+    (with-temp-buffer
+      (neat-message-log-mode)
+      (let ((neat-message-log-max-buffer-lines 3)
+            (inhibit-read-only t))
+        (insert "1\n2\n3\n4\n5\n6\n")
+        (neat--message-log-trim)
+        ;; The last 3 lines survive.
+        (expect (buffer-string) :to-equal "4\n5\n6\n")))))
+
 (describe "neat-send"
   (it "increments the request id for each call"
     (let ((conn (neat-connection--make))
