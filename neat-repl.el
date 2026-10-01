@@ -480,8 +480,9 @@ whatever comes next starts out somewhere else."
           (setq neat-repl--current-ns nil)))
       ;; C-g here means no, not a quit out of the process filter.
       (when (condition-case nil
-                (y-or-n-p
-                 "Neat: the server doesn't know this session; clone a new one? ")
+                (let ((enable-recursive-minibuffers t))
+                  (y-or-n-p
+                   "Neat: the server lost this session; clone a new one? "))
               (quit nil))
         (neat-clone-session conn)))))
 
@@ -531,9 +532,12 @@ be CONN's current one.  A trailing newline is appended so
 \\<neat-repl-stdin-map>\\[neat-repl-stdin-eof] at the prompt sends \
 end-of-file (an empty `stdin') instead.
 `C-g' interrupts the eval, or sends end-of-file when the server can't
-interrupt, so the eval doesn't sit waiting forever."
+interrupt, so the eval doesn't sit waiting forever.  The prompt opens
+even when the minibuffer is already in use, since `need-input' can
+turn up at any moment."
   (let ((session (neat-bencode-get resp "session"))
-        (neat-repl--stdin-eof nil))
+        (neat-repl--stdin-eof nil)
+        (enable-recursive-minibuffers t))
     (condition-case nil
         (let ((input (read-from-minibuffer
                       (substitute-command-keys

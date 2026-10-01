@@ -340,6 +340,20 @@ non-nil, in which case it's a source-buffer eval."
       (expect (neat-connection-session conn) :to-be nil)
       (expect 'neat-clone-session :not :to-have-been-called)))
 
+  (it "asks even when the minibuffer is already in use"
+    (neat-repl-test--with-repl conn
+      (let (recursive)
+        (setf (neat-connection-session conn) "gone")
+        (spy-on 'neat-connection-live-p :and-return-value t)
+        (spy-on 'y-or-n-p :and-call-fake
+                (lambda (&rest _)
+                  (setq recursive enable-recursive-minibuffers)
+                  nil))
+        (let ((enable-recursive-minibuffers nil))
+          (neat-repl-test--render-all
+           '((("id" . "1") ("status" "error" "unknown-session" "done")))))
+        (expect recursive :to-be-truthy))))
+
   (it "takes C-g at the offer as a no"
     (neat-repl-test--with-repl conn
       (setf (neat-connection-session conn) "gone")
@@ -582,6 +596,17 @@ non-nil, in which case it's a source-buffer eval."
     (spy-on 'neat-stdin)
     (neat-repl--handle-need-input conn need-input)
     (expect 'neat-stdin :to-have-been-called-with conn "" :session "S-eval"))
+
+  (it "prompts even when the minibuffer is already in use"
+    (let (recursive)
+      (spy-on 'read-from-minibuffer
+              :and-call-fake (lambda (&rest _)
+                               (setq recursive enable-recursive-minibuffers)
+                               "x"))
+      (spy-on 'neat-stdin)
+      (let ((enable-recursive-minibuffers nil))
+        (neat-repl--handle-need-input conn need-input))
+      (expect recursive :to-be-truthy)))
 
   (it "binds the end-of-file key in the prompt's keymap"
     (expect (lookup-key neat-repl-stdin-map (kbd "C-c C-d"))
