@@ -286,6 +286,90 @@
         (expect (neat-completions-sync conn "ma" nil 1)
                 :to-equal '((("candidate" . "map"))))))))
 
+(defun neat-client-test--fake-server (conn reply-fn)
+  "Make CONN's sends get an answer from REPLY-FN.
+REPLY-FN gets each decoded request and returns the reply dicts; the
+returned function goes in place of `process-send-string'."
+  (lambda (_proc bytes)
+    (let ((request (car (neat-bencode-decode bytes))))
+      (dolist (reply (funcall reply-fn request))
+        (neat-client-test--push-bytes
+         conn (neat-bencode-encode
+               (cons (cons "id" (neat-bencode-get request "id")) reply)))))))
+
+(describe "sync tooling ops and an ns the server turns down"
+  :var (conn sent-ns)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1)
+          sent-ns nil))
+
+  (it "retry completions without the ns"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (req)
+                       (push (neat-bencode-get req "ns") sent-ns)
+                       (if (neat-bencode-get req "ns")
+                           '((("status" "done" "error" "namespace-not-found")))
+                         '((("completions" . ((("candidate" . "map"))))
+                            ("status" "done"))))))))
+      (expect (neat-completions-sync conn "ma" "not.loaded")
+              :to-equal '((("candidate" . "map"))))
+      (expect (nreverse sent-ns) :to-equal '("not.loaded" nil))))
+
+  (it "retry lookup without the ns after a bare error"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (req)
+                       (push (neat-bencode-get req "ns") sent-ns)
+                       (if (neat-bencode-get req "ns")
+                           '((("status" "error" "done")))
+                         '((("info" . (("name" . "map")))
+                            ("status" "done"))))))))
+      (expect (neat-lookup-sync conn "map" "not.loaded")
+              :to-equal '(("name" . "map")))
+      (expect (nreverse sent-ns) :to-equal '("not.loaded" nil))))
+
+  (it "don't retry on an error that has nothing to do with the ns"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (req)
+                       (push (neat-bencode-get req "ns") sent-ns)
+                       '((("status" "done" "error" "unknown-op")))))))
+      (expect (neat-completions-sync conn "ma" "user") :to-be nil)
+      (expect sent-ns :to-equal '("user"))))
+
+  (it "retry the async lookup without the ns too"
+    (let (got)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (neat-client-test--fake-server
+                  conn (lambda (req)
+                         (push (neat-bencode-get req "ns") sent-ns)
+                         (if (neat-bencode-get req "ns")
+                             '((("status" "done" "error" "namespace-not-found")))
+                           '((("info" . (("name" . "map")))
+                              ("status" "done"))))))))
+        (neat-lookup-async conn "map" "not.loaded" (lambda (i) (setq got i))))
+      (expect got :to-equal '(("name" . "map")))
+      (expect (nreverse sent-ns) :to-equal '("not.loaded" nil))))
+
+  (it "don't retry when the ns was fine"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (req)
+                       (push (neat-bencode-get req "ns") sent-ns)
+                       '((("status" "done")))))))
+      (expect (neat-completions-sync conn "zz" "user") :to-be nil)
+      (expect sent-ns :to-equal '("user")))))
+
 (describe "neat-clone-session"
   (it "captures new-session from the response and assigns it to the connection"
     (let ((conn (neat-connection--make))

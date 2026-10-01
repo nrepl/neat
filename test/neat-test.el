@@ -248,6 +248,93 @@ POS is a 1-indexed buffer position."
         (with-current-buffer repl (setq neat-current-connection nil))
         (kill-buffer repl)))))
 
+(describe "neat--tooling-ns"
+  (it "prefers the buffer's ns"
+    (with-temp-buffer
+      (setq neat-ns "my.ns")
+      (let ((conn (neat-connection--make :ns "user")))
+        (expect (neat--tooling-ns conn) :to-equal "my.ns"))))
+
+  (it "falls back to the ns the REPL last reported"
+    (with-temp-buffer
+      (let ((conn (neat-connection--make :ns "user")))
+        (expect (neat--tooling-ns conn) :to-equal "user"))))
+
+  (it "is nil when neither knows"
+    (with-temp-buffer
+      (expect (neat--tooling-ns (neat-connection--make)) :to-be nil))))
+
+(describe "tooling ops send an ns"
+  :var (conn)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1 :ns "user"))
+    (spy-on 'neat-active-connection :and-return-value conn)
+    (spy-on 'neat-connection-live-p :and-return-value t))
+
+  (it "in completion-at-point"
+    (spy-on 'neat-completions-sync :and-return-value nil)
+    (with-temp-buffer
+      (insert "ma")
+      (neat-completion-at-point)
+      (expect 'neat-completions-sync
+              :to-have-been-called-with conn "ma" "user"
+              neat-completion-timeout)))
+
+  (it "in eldoc"
+    (spy-on 'neat-lookup)
+    (with-temp-buffer
+      (insert "(map ")
+      (neat-eldoc-function #'ignore)
+      (expect (nth 2 (spy-calls-args-for 'neat-lookup 0)) :to-equal "user")))
+
+  (it "in eldoc, trying again without it when it's turned down"
+    (let (shown)
+      (spy-on 'neat-lookup
+              :and-call-fake
+              (lambda (_c _sym ns cb)
+                (funcall cb (if ns
+                                '(("id" . "1")
+                                  ("status" "done" "error" "namespace-not-found"))
+                              '(("id" . "2") ("info" . (("doc" . "Maps.")))
+                                ("status" "done"))))))
+      (with-temp-buffer
+        (insert "(map ")
+        (neat-eldoc-function (lambda (str &rest _) (setq shown str))))
+      (expect (mapcar (lambda (args) (nth 2 args))
+                      (reverse (spy-calls-all-args 'neat-lookup)))
+              :to-equal '("user" nil))
+      (expect shown :to-equal "Maps.")))
+
+  (it "in the doc lookup"
+    (spy-on 'neat-lookup-sync :and-return-value '(("name" . "map")))
+    (spy-on 'neat--render-doc)
+    (with-temp-buffer
+      (insert "map")
+      (neat-show-doc-at-point)
+      (expect 'neat-lookup-sync
+              :to-have-been-called-with conn "map" "user" neat-lookup-timeout)))
+
+  (it "in xref find-definitions"
+    (spy-on 'neat-lookup-sync :and-return-value nil)
+    (with-temp-buffer
+      (xref-backend-definitions 'neat "map")
+      (expect 'neat-lookup-sync
+              :to-have-been-called-with conn "map" "user"
+              neat-lookup-timeout))))
+
+(describe "neat-eldoc-function"
+  (it "tells eldoc when there's nothing to show"
+    (let ((conn (neat-connection--make :host "h" :port 1))
+          (calls nil))
+      (spy-on 'neat-active-connection :and-return-value conn)
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'neat-lookup-async
+              :and-call-fake (lambda (_c _sym _ns cb) (funcall cb nil)))
+      (with-temp-buffer
+        (insert "(map ")
+        (neat-eldoc-function (lambda (&rest args) (push args calls))))
+      (expect calls :to-equal '((nil))))))
+
 (describe "neat--lookup-file-path"
   (it "returns plain paths unchanged"
     (expect (neat--lookup-file-path "/tmp/foo.clj")

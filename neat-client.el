@@ -83,11 +83,12 @@ Slots:
   PROCESS      - the underlying network process
   HOST, PORT   - the address we connected to
   SESSION      - the nREPL session id (set by `neat-clone-session')
+  NS           - the namespace the REPL last reported, if any
   CAPABILITIES - parsed response from a `describe' op
   PENDING      - hash table mapping request id -> callback function
   NEXT-ID      - integer counter used to mint fresh request ids
   RECV-BUFFER  - accumulated, undecoded bytes from the wire"
-  process host port session capabilities
+  process host port session ns capabilities
   (pending (make-hash-table :test 'equal))
   (next-id 0)
   (recv-buffer (unibyte-string)))
@@ -476,25 +477,71 @@ the pending table."
         (remhash id (neat-connection-pending conn))))
     (nreverse responses)))
 
+(defun neat-client--ns-rejected-p (responses)
+  "Return non-nil if RESPONSES look like the server turned down their ns.
+That's a `namespace-not-found' status, or a bare `error' with nothing
+more specific next to it.  Servers differ in what they do with a
+namespace that isn't loaded yet, so a tooling request that named one
+and got this back, with no results, is worth repeating without it.
+An `unknown-op' or `unknown-session' comes with `error' as well, but
+has nothing to do with the ns."
+  (cl-some (lambda (resp)
+             (let ((status (neat-bencode-get resp "status")))
+               (or (member "namespace-not-found" status)
+                   (and (member "error" status)
+                        (cl-every (lambda (s) (member s '("error" "done")))
+                                  status)))))
+           responses))
+
 (defun neat-completions-sync (conn prefix &optional ns timeout)
   "Block until `completions' for PREFIX (in NS) come back from CONN.
 Return the list of candidate dicts (typically `(\"candidate\" . \"foo\")
 `(\"type\" . \"function\")' shaped), as many as arrived within
-TIMEOUT seconds (default 1)."
-  (mapcan (lambda (resp)
-            (copy-sequence (neat-bencode-get resp "completions")))
-          (neat-client--request-sync
-           conn (or timeout 1)
-           (lambda (callback) (neat-completions conn prefix ns callback)))))
+TIMEOUT seconds (default 1).  If the server turns NS down
+\(`namespace-not-found', or a bare `error'), the request goes out
+again without it."
+  (let* ((responses (neat-client--request-sync
+                     conn (or timeout 1)
+                     (lambda (callback)
+                       (neat-completions conn prefix ns callback))))
+         (candidates (mapcan (lambda (resp)
+                               (copy-sequence
+                                (neat-bencode-get resp "completions")))
+                             responses)))
+    (if (and ns (not candidates) (neat-client--ns-rejected-p responses))
+        (neat-completions-sync conn prefix nil timeout)
+      candidates)))
 
 (defun neat-lookup-sync (conn sym &optional ns timeout)
   "Block until CONN responds to a `lookup' for SYM (in NS).
 Return the `info' dict, or nil if none came within TIMEOUT seconds
-\(default 1)."
-  (cl-some (lambda (resp) (neat-bencode-get resp "info"))
-           (neat-client--request-sync
-            conn (or timeout 1)
-            (lambda (callback) (neat-lookup conn sym ns callback)))))
+\(default 1).  If the server turns NS down (`namespace-not-found', or
+a bare `error'), the request goes out again without it."
+  (let* ((responses (neat-client--request-sync
+                     conn (or timeout 1)
+                     (lambda (callback) (neat-lookup conn sym ns callback))))
+         (info (cl-some (lambda (resp) (neat-bencode-get resp "info"))
+                        responses)))
+    (if (and ns (not info) (neat-client--ns-rejected-p responses))
+        (neat-lookup-sync conn sym nil timeout)
+      info)))
+
+(defun neat-lookup-async (conn sym ns callback)
+  "Look SYM up on CONN (in NS) and call CALLBACK with the `info' dict.
+CALLBACK gets nil when the server has none.  Like `neat-lookup-sync',
+this asks again without NS when the server turns NS down."
+  (let (responses)
+    (neat-lookup
+     conn sym ns
+     (lambda (resp)
+       (push resp responses)
+       (when (member "done" (neat-bencode-get resp "status"))
+         (let* ((all (nreverse responses))
+                (info (cl-some (lambda (r) (neat-bencode-get r "info")) all)))
+           (if (and ns (not info) (neat-client--ns-rejected-p all)
+                    (neat-connection-live-p conn))
+               (neat-lookup-async conn sym nil callback)
+             (funcall callback info))))))))
 
 
 ;;;; Process filter / sentinel
