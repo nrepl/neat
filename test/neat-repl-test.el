@@ -24,6 +24,8 @@ inserts text."
           (buf (neat-repl-create-buffer ,conn)))
      (unwind-protect
          (with-current-buffer buf ,@body)
+       ;; Keep the kill-buffer cleanup away from the fake connection.
+       (with-current-buffer buf (setq neat-current-connection nil))
        (kill-buffer buf))))
 
 (defun neat-repl-test--text ()
@@ -547,6 +549,51 @@ inserts text."
                 :to-have-been-called-with conn resp)
         ;; Still waiting on the eval, so no prompt yet.
         (expect (neat-repl-test--text) :to-equal "")))))
+
+(describe "closing the REPL"
+  :var (calls)
+  (before-each
+    (setq calls nil)
+    (spy-on 'neat-connection-live-p :and-return-value t)
+    (spy-on 'neat-close-session-sync
+            :and-call-fake (lambda (c &rest _)
+                             (push (list 'close (neat-connection-session c))
+                                   calls)))
+    (spy-on 'neat-close-session
+            :and-call-fake (lambda (c &rest _)
+                             (push (list 'close-no-wait
+                                         (neat-connection-session c))
+                                   calls)))
+    (spy-on 'neat-disconnect
+            :and-call-fake (lambda (_c) (push 'disconnect calls))))
+
+  (it "closes the session before disconnecting on quit"
+    (neat-repl-test--with-repl conn
+      (setf (neat-connection-session conn) "S-1")
+      (spy-on 'bury-buffer)
+      (neat-repl-quit)
+      (expect (nreverse calls) :to-equal '((close "S-1") disconnect))
+      (expect neat-current-connection :to-be nil)))
+
+  (it "closes the session without waiting when the buffer is killed"
+    (neat-repl-test--with-repl conn
+      (setf (neat-connection-session conn) "S-2")
+      (neat-repl--kill-buffer-cleanup)
+      (expect (nreverse calls) :to-equal '((close-no-wait "S-2") disconnect))))
+
+  (it "just disconnects when there's no session to close"
+    (neat-repl-test--with-repl _conn
+      (spy-on 'bury-buffer)
+      (neat-repl-quit)
+      (expect calls :to-equal '(disconnect))))
+
+  (it "just disconnects when the server doesn't support close"
+    (neat-repl-test--with-repl conn
+      (setf (neat-connection-session conn) "S-3"
+            (neat-connection-capabilities conn) '(("ops" "eval" "clone")))
+      (spy-on 'bury-buffer)
+      (neat-repl-quit)
+      (expect calls :to-equal '(disconnect)))))
 
 (describe "neat-repl--handle-disconnect"
   (it "sets the dead flag on the conn's REPL buffer"

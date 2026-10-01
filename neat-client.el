@@ -667,6 +667,21 @@ turns NS down."
            (neat-lookup-async conn sym nil timeout callback)
          (funcall callback info))))))
 
+(defun neat-close-session-sync (conn &optional session timeout)
+  "Close SESSION on CONN and block until the server confirms.
+SESSION defaults to CONN's current one.  Return non-nil if the server
+confirmed within TIMEOUT seconds, which defaults to 1 second; a
+connection that goes away first doesn't count."
+  (let ((status (neat-bencode-get
+                 (car (last (neat-client--request-sync
+                             conn (or timeout 1)
+                             (lambda (callback)
+                               (neat-close-session conn session callback)))))
+                 "status")))
+    (and (member "done" status)
+         (not (member "connection-closed" status))
+         t)))
+
 
 ;;;; Process filter / sentinel
 

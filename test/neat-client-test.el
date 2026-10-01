@@ -371,6 +371,36 @@ returned function goes in place of `process-send-string'."
       (expect (neat-completions-sync conn "zz" "user") :to-be nil)
       (expect sent-ns :to-equal '("user")))))
 
+(describe "neat-close-session-sync"
+  (it "returns non-nil once the server confirms the close"
+    (let ((conn (neat-connection--make :session "S-1")))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _)
+                   (neat-client-test--push-bytes
+                    conn (neat-bencode-encode
+                          '(("id" . "1") ("status" "done" "session-closed")))))))
+        (expect (neat-close-session-sync conn) :to-be-truthy)
+        (expect (neat-connection-session conn) :to-be nil))))
+
+  (it "gives up after the timeout"
+    (let ((conn (neat-connection--make :session "S-1")))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output) #'ignore))
+        (expect (neat-close-session-sync conn nil 0.05) :to-be nil)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
+  (it "doesn't count a connection that went away as confirmation"
+    (let ((conn (neat-connection--make :session "S-1")))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _) (neat-client--flush-pending conn))))
+        (expect (neat-close-session-sync conn) :to-be nil)))))
+
 (describe "neat-clone-session"
   (it "captures new-session from the response and assigns it to the connection"
     (let ((conn (neat-connection--make))
