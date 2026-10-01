@@ -483,7 +483,61 @@ returned function goes in place of `process-send-string'."
         (neat-close-session conn)
         (let ((decoded (car (neat-bencode-decode sent))))
           (expect (neat-bencode-get decoded "op") :to-equal "close")
-          (expect (neat-bencode-get decoded "session") :to-equal "S-5"))))))
+          (expect (neat-bencode-get decoded "session") :to-equal "S-5")))))
+
+  (it "clears the connection's session when closing it"
+    (let ((conn (neat-connection--make :session "S-5")))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore))
+        (neat-close-session conn)
+        (expect (neat-connection-session conn) :to-be nil))))
+
+  (it "keeps the connection's session when closing another one"
+    (let ((conn (neat-connection--make :session "S-5"))
+          sent)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-close-session conn "S-6")
+        (expect (neat-bencode-get (car (neat-bencode-decode sent)) "session")
+                :to-equal "S-6")
+        (expect (neat-connection-session conn) :to-equal "S-5")))))
+
+(describe "neat-response-error"
+  (it "describes namespace-not-found, naming the ns when the server does"
+    (expect (neat-response-error
+             '(("status" "done" "error" "namespace-not-found")
+               ("ns" . "my.typo")))
+            :to-equal "namespace not found: my.typo")
+    (expect (neat-response-error
+             '(("status" "namespace-not-found" "done" "error")))
+            :to-equal "namespace not found"))
+
+  (it "describes unknown-session"
+    (expect (neat-response-error '(("status" "error" "unknown-session" "done")))
+            :to-equal "unknown session"))
+
+  (it "describes unknown-op, naming the op when the server does"
+    (expect (neat-response-error
+             '(("status" "done" "error" "unknown-op") ("op" . "load-file")))
+            :to-equal "unknown op: load-file"))
+
+  (it "describes a bare error"
+    (expect (neat-response-error '(("status" "error" "done")))
+            :to-equal "error"))
+
+  (it "leaves a bare error alone when the request already explained it"
+    (expect (neat-response-error '(("status" "error" "done")) t) :to-be nil))
+
+  (it "leaves an error that comes with its own explanation alone"
+    (expect (neat-response-error '(("status" "error") ("err" . "boom\n")))
+            :to-be nil)
+    (expect (neat-response-error '(("status" "error") ("ex" . "boom")))
+            :to-be nil))
+
+  (it "is nil for ordinary statuses"
+    (dolist (status '(("done") ("eval-error") ("need-input") nil))
+      (expect (neat-response-error `(("status" . ,status))) :to-be nil))))
 
 (describe "neat-eval"
   (it "includes the session and code fields in the sent message"

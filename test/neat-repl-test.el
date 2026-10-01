@@ -197,6 +197,90 @@ inserts text."
        '(("id" . "1") ("ex" . "boom") ("status" "eval-error" "done")))
       (expect (neat-repl-test--text) :to-equal "boom\nneat> "))))
 
+(describe "neat-repl--render-response (error statuses)"
+  (it "shows namespace-not-found as a comment line"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--render-response
+       '(("id" . "1") ("ns" . "my.typo")
+         ("status" "done" "error" "namespace-not-found")))
+      (expect (neat-repl-test--text)
+              :to-equal ";; namespace not found: my.typo\nneat> ")))
+
+  (it "shows unknown-op as a comment line"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--render-response
+       '(("id" . "1") ("status" "error" "unknown-op" "done")))
+      (expect (neat-repl-test--text) :to-equal ";; unknown op\nneat> ")))
+
+  (it "shows a bare error as a comment line"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--render-response '(("id" . "1") ("status" "error" "done")))
+      (expect (neat-repl-test--text) :to-equal ";; error\nneat> ")))
+
+  (it "doesn't add a bare error line after err already explained it"
+    (neat-repl-test--with-repl _conn
+      (neat-repl-test--render-all
+       '((("id" . "1") ("err" . "boom\n"))
+         (("id" . "1") ("status" "error" "done"))))
+      (expect (neat-repl-test--text) :to-equal "boom\nneat> ")))
+
+  (it "doesn't add a bare error line after an ex"
+    (neat-repl-test--with-repl _conn
+      (neat-repl-test--render-all
+       '((("id" . "1") ("ex" . "boom") ("status" "eval-error"))
+         (("id" . "1") ("status" "error" "done"))))
+      (expect (neat-repl-test--text) :to-equal "boom\nneat> ")))
+
+  (it "forgets the old session's namespace when it's gone"
+    (neat-repl-test--with-repl conn
+      (setf (neat-connection-session conn) "gone"
+            (neat-connection-ns conn) "myapp.core")
+      (setq neat-repl--current-ns "myapp.core")
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'y-or-n-p :and-return-value t)
+      (spy-on 'neat-clone-session)
+      (neat-repl-test--render-all
+       '((("id" . "1") ("status" "error" "unknown-session" "done"))))
+      (expect (neat-connection-ns conn) :to-be nil)
+      (expect neat-repl--current-ns :to-be nil)
+      ;; The new prompt doesn't claim the old namespace either.
+      (expect (neat-repl-test--text) :to-equal ";; unknown session\nneat> ")))
+
+  (it "offers a fresh session on unknown-session"
+    (neat-repl-test--with-repl conn
+      (setf (neat-connection-session conn) "gone")
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'y-or-n-p :and-return-value t)
+      (spy-on 'neat-clone-session)
+      (neat-repl--render-response
+       '(("id" . "1") ("session" . "gone")
+         ("status" "error" "unknown-session" "done")))
+      (expect (neat-repl-test--text) :to-equal ";; unknown session\nneat> ")
+      (expect (neat-connection-session conn) :to-be nil)
+      (expect 'neat-clone-session :to-have-been-called-with conn)))
+
+  (it "drops the dead session even when the offer is declined"
+    (neat-repl-test--with-repl conn
+      (setf (neat-connection-session conn) "gone")
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'y-or-n-p :and-return-value nil)
+      (spy-on 'neat-clone-session)
+      (neat-repl--render-response
+       '(("id" . "1") ("status" "error" "unknown-session" "done")))
+      (expect (neat-connection-session conn) :to-be nil)
+      (expect 'neat-clone-session :not :to-have-been-called)))
+
+  (it "leaves the session alone when the reply names a different one"
+    (neat-repl-test--with-repl conn
+      (setf (neat-connection-session conn) "mine")
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'y-or-n-p)
+      (neat-repl--render-response
+       '(("id" . "1") ("session" . "other")
+         ("status" "error" "unknown-session" "done")))
+      (expect (neat-connection-session conn) :to-equal "mine")
+      (expect 'y-or-n-p :not :to-have-been-called))))
+
 (describe "neat-repl--render-response (connection-closed)"
   (it "inserts a prompt on a normal done"
     (neat-repl-test--with-repl _conn

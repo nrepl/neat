@@ -484,11 +484,39 @@ for each response message."
 
 (defun neat-close-session (conn &optional session callback)
   "Send a `close' op on CONN to close SESSION (defaults to the current one).
+Closing CONN's current session also clears it from CONN, so later
+requests don't go out with a session the server has thrown away.
 CALLBACK, if given, fires for each response message."
   (let* ((sess (or session (neat-connection-session conn)))
          (msg `((op . "close")
                 ,@(when sess `((session . ,sess))))))
-    (neat-send conn msg callback)))
+    (prog1 (neat-send conn msg callback)
+      (when (and sess (equal sess (neat-connection-session conn)))
+        (setf (neat-connection-session conn) nil)))))
+
+(defun neat-response-error (resp &optional explained)
+  "Return a short description of the error status in RESP, or nil.
+Picks out the statuses servers send in place of any output, which
+would otherwise leave nothing to see: `namespace-not-found',
+`unknown-session', `unknown-op', and a bare `error' with no `err' or
+`ex' next to it.  EXPLAINED non-nil means the request already showed
+an `err' or `ex' earlier, so a bare `error' needs no line of its own.
+Statuses are matched by membership, as servers pair them with `done'
+and `error' in no fixed order."
+  (let ((status (neat-bencode-get resp "status")))
+    (cl-flet ((detailed (text key)
+                (let ((detail (neat-bencode-get resp key)))
+                  (if (stringp detail) (format "%s: %s" text detail) text))))
+      (cond
+       ((member "namespace-not-found" status)
+        (detailed "namespace not found" "ns"))
+       ((member "unknown-session" status) "unknown session")
+       ((member "unknown-op" status) (detailed "unknown op" "op"))
+       ((and (member "error" status)
+             (not explained)
+             (not (neat-bencode-get resp "err"))
+             (not (neat-bencode-get resp "ex")))
+        "error")))))
 
 (defun neat-completions (conn prefix &optional ns callback)
   "Send a `completions' op on CONN for PREFIX (and optionally NS).
