@@ -54,6 +54,15 @@ the server going away.  Use to update buffers that reference the
 connection (the REPL buffer adds a `connection closed' marker this
 way).")
 
+(defvar neat-unhandled-message-functions nil
+  "Abnormal hook run for messages that no pending callback claims.
+Each function is called with two arguments, the `neat-connection' and
+the response dict.  That covers messages with no `id', ids that were
+never registered, and anything a server sends for a request after its
+`done' (nREPL and Babashka both keep sending `out' from a `future'
+that outlives the eval that started it).  The REPL buffer uses this
+to show such output above its prompt.")
+
 (defun neat-active-connection ()
   "Return the active connection for the current buffer, or nil.
 Prefers `neat-current-connection' when set buffer-locally and still
@@ -538,8 +547,10 @@ A server can send any bencode value, so MESSAGE gets checked first:
 anything other than a dict is logged and skipped, a `status' sent as
 a plain string counts as a list of one, and any other `status' that
 isn't a list is dropped as if it weren't there.  Either would
-otherwise blow up in here or in the callback.  When the response's
-status contains `done' the callback entry is pruned afterwards."
+otherwise blow up in here or in the callback.  A message without a
+callback goes to `neat-unhandled-message-functions'.  When the
+response's status contains `done' the callback entry is pruned
+afterwards."
   (neat-client--log conn :in message)
   (if (not (neat-bencode-dict-p message))
       (neat-client--log conn :note '(skipped "not a dict"))
@@ -552,13 +563,16 @@ status contains `done' the callback entry is pruned afterwards."
     (let* ((id (neat-bencode-get message "id"))
            (status (neat-bencode-get message "status"))
            (callback (and id (gethash id (neat-connection-pending conn)))))
-      (when callback
-        ;; Don't let a buggy callback nuke the whole filter.  Skip the
-        ;; trap when the user is debugging, so `toggle-debug-on-error'
-        ;; reveals the underlying problem instead of swallowing it.
-        (condition-case-unless-debug err
-            (funcall callback message)
-          (error (message "neat: callback error: %S" err))))
+      (if callback
+          ;; Don't let a buggy callback nuke the whole filter.  Skip the
+          ;; trap when the user is debugging, so `toggle-debug-on-error'
+          ;; reveals the underlying problem instead of swallowing it.
+          (condition-case-unless-debug err
+              (funcall callback message)
+            (error (message "neat: callback error: %S" err)))
+        (with-demoted-errors "neat: unhandled message hook: %S"
+          (run-hook-with-args 'neat-unhandled-message-functions
+                              conn message)))
       (when (and id (member "done" status))
         (remhash id (neat-connection-pending conn))))))
 

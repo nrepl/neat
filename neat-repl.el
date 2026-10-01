@@ -83,6 +83,12 @@ in a language with very different bracketing rules.")
 (defvar-local neat-repl--current-ns nil
   "Most-recent namespace reported by the server for this buffer.")
 
+(defvar-local neat-repl--prompt-start nil
+  "Marker at the start of the prompt waiting for input, or nil.
+Set whenever a prompt goes in and cleared once input is sent, so
+output that turns up between evals can be put above the prompt
+instead of after it.")
+
 (defvar-local neat-repl--connection-dead nil
   "Non-nil once the buffer's connection has died.
 Set by `neat-repl--handle-disconnect'.  The input sender consults this
@@ -173,10 +179,106 @@ purpose is to satisfy `comint-output-filter' and friends."
           (or neat-repl--current-ns neat-repl-default-ns)))
 
 (defun neat-repl--insert-prompt ()
-  "Insert a fresh prompt at the end of the buffer."
+  "Insert a fresh prompt at the end of the buffer.
+It starts on a line of its own, even after output that didn't end one
+or after the dead prompt of an earlier connection in a reused buffer."
   (let ((proc (get-buffer-process (current-buffer))))
     (when proc
+      (unless (save-excursion (goto-char (process-mark proc)) (bolp))
+        (comint-output-filter proc "\n"))
+      (setq neat-repl--prompt-start (copy-marker (process-mark proc)))
       (comint-output-filter proc (neat-repl--prompt)))))
+
+(defun neat-repl--emit-output (text face)
+  "Insert TEXT in FACE above the prompt waiting for input.
+With no prompt showing (an eval from this buffer is still running)
+TEXT just streams in at the process mark like any other output.
+Either way it goes through `comint-output-filter'.  A chunk that
+doesn't end in a newline gets one, so the prompt stays on its own
+line; the next chunk picks up where that one left off."
+  (let ((proc (get-buffer-process (current-buffer))))
+    (cond
+     ((not proc) nil)
+     ((and neat-repl--prompt-start (marker-position neat-repl--prompt-start))
+      (neat-repl--insert-above-prompt proc text face))
+     (t (comint-output-filter proc (propertize text 'face face))))))
+
+(defvar ansi-color-context-region)
+
+(defvar-local neat-repl--ansi-context nil
+  "ANSI color state for text inserted above the prompt.
+It plays the part of `ansi-color-context-region' for that text alone.
+The context streamed output uses points past the prompt, so sharing
+one would let a color left on at either end trip up the other.")
+
+(defun neat-repl--insert-above-prompt (proc text face)
+  "Insert TEXT in FACE right above the waiting prompt in PROC's buffer.
+The text goes through `comint-output-filter' itself, with the process
+mark moved to the start of the prompt for the duration, so it gets
+what any other output gets: filters, ANSI colors, carriage motion.
+A marker that moves along with insertions keeps track of the prompt,
+and the process mark and comint's record of where the prompt is are
+put back afterwards.  ANSI colors keep their own state here (see
+`neat-repl--ansi-context'), a chunk ending in a carriage return gets
+its line overwritten by the next one, as comint does for streamed
+output, and `comint-move-point-for-output' moves point to the input
+rather than onto the prompt."
+  (unless (string-empty-p text)
+    (let* ((pmark (process-mark proc))
+           (end (copy-marker (process-mark proc)))
+           (prompt (copy-marker neat-repl--prompt-start t))
+           (streamed-ansi (and (boundp 'ansi-color-context-region)
+                               ansi-color-context-region))
+           (overwrite (string-suffix-p "\r" text))
+           (text (if overwrite (string-trim-right text "\r+") text))
+           (padded (not (string-suffix-p "\n" text))))
+      (save-restriction
+        (widen)
+        (unwind-protect
+            (progn
+              (when (and (> prompt (point-min))
+                         (get-text-property (1- prompt) 'neat-repl-padding))
+                (let ((inhibit-read-only t))
+                  (delete-region (1- prompt) prompt)))
+              (set-marker pmark prompt)
+              ;; A color still on from the last chunk carries on here.
+              (when-let* ((marker (cadr neat-repl--ansi-context))
+                          ((markerp marker))
+                          ((marker-position marker)))
+                (set-marker marker prompt))
+              (setq-local ansi-color-context-region neat-repl--ansi-context)
+              ;; comint takes the last line of what it inserts for a
+              ;; prompt unless it ends in a newline, and with the
+              ;; process mark at the prompt it would move point there.
+              (let ((comint-move-point-for-output nil))
+                (comint-output-filter
+                 proc (propertize (if padded
+                                      (concat text (propertize
+                                                    "\n" 'neat-repl-padding t))
+                                    text)
+                                  'face face)))
+              (when (and overwrite padded)
+                (let ((eol (1- prompt))
+                      (inhibit-field-text-motion t))
+                  (with-silent-modifications
+                    (put-text-property (save-excursion
+                                         (goto-char eol)
+                                         (line-beginning-position))
+                                       eol 'comint-must-overwrite t)))))
+          (setq neat-repl--ansi-context ansi-color-context-region)
+          (setq-local ansi-color-context-region streamed-ansi)
+          (set-marker pmark end)
+          (set-marker neat-repl--prompt-start prompt)
+          (setq comint-last-prompt
+                (cons (copy-marker prompt) (copy-marker end)))
+          (let ((inhibit-read-only t))
+            (font-lock-append-text-property prompt end 'font-lock-face
+                                            'comint-highlight-prompt))
+          (set-marker prompt nil)
+          (set-marker end nil)))
+      (when comint-move-point-for-output
+        (dolist (window (get-buffer-window-list nil nil t))
+          (comint-adjust-window-point window proc))))))
 
 (defun neat-repl--input-complete-p (input)
   "Return non-nil if INPUT is a balanced, complete form.
@@ -208,6 +310,7 @@ Otherwise insert a newline so the user can keep typing the form."
   (let* ((buffer (current-buffer))
          (conn neat-current-connection)
          (trimmed (string-trim-right (substring-no-properties input))))
+    (setq neat-repl--prompt-start nil)
     (cond
      ((or neat-repl--connection-dead
           (and conn (not (neat-connection-live-p conn))))
@@ -233,11 +336,9 @@ on the same dead connection are no-ops."
     (with-current-buffer buf
       (unless neat-repl--connection-dead
         (setq neat-repl--connection-dead t)
-        (let ((proc (get-buffer-process (current-buffer))))
-          (when (process-live-p proc)
-            (comint-output-filter
-             proc (propertize ";; connection closed\n"
-                              'face 'neat-repl-error))))))))
+        (when (process-live-p (get-buffer-process (current-buffer)))
+          (neat-repl--emit-output ";; connection closed\n"
+                                  'neat-repl-error))))))
 
 ;;;###autoload
 (add-hook 'neat-disconnect-functions #'neat-repl--handle-disconnect)
@@ -277,7 +378,26 @@ on the same dead connection are no-ops."
       ;; input that has nowhere to go.
       (when (and (member "done" status)
                  (not (member "connection-closed" status)))
-        (comint-output-filter proc (neat-repl--prompt))))))
+        (neat-repl--insert-prompt)))))
+
+(defun neat-repl--handle-unhandled-message (conn message)
+  "Show `out' and `err' from MESSAGE above the prompt in CONN's REPL.
+Run from `neat-unhandled-message-functions', so MESSAGE belongs to no
+pending request: output with no `id', or late output from an eval
+that already finished."
+  (when-let* ((buf (neat-repl-buffer-for conn))
+              ((buffer-live-p buf)))
+    (let ((out (neat-bencode-get message "out"))
+          (err (neat-bencode-get message "err")))
+      (when (or out err)
+        (with-current-buffer buf
+          (when out (neat-repl--emit-output out 'neat-repl-output))
+          (when err (neat-repl--emit-output err 'neat-repl-error)))))))
+
+;; Not autoloaded: the handler only exists once this file is loaded,
+;; and a client used without the REPL has no buffer to show output in.
+(add-hook 'neat-unhandled-message-functions
+          #'neat-repl--handle-unhandled-message)
 
 (defun neat-repl--handle-need-input (conn)
   "Prompt the user for a line of input and ship it to CONN via the `stdin' op.
