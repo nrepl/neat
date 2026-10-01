@@ -423,6 +423,21 @@
         (push (neat-send conn '((op . "describe"))) ids)
         (expect (nreverse ids) :to-equal '("1" "2" "3")))))
 
+  (it "leaves nothing behind when the message can't be encoded"
+    (let ((conn (neat-connection--make))
+          (neat-log-messages t)
+          logged)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (&rest _) (error "Should not send")))
+                ((symbol-function 'neat-client--log)
+                 (lambda (&rest _) (setq logged t))))
+        (expect (neat-send conn '((op . "eval") (ns . nil)) #'ignore)
+                :to-throw 'neat-bencode-error)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0)
+        (expect logged :to-be nil))))
+
   (it "errors when the connection is not live"
     (let ((conn (neat-connection--make)))
       (cl-letf (((symbol-function 'process-live-p) (lambda (_) nil)))

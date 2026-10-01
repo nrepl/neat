@@ -289,12 +289,14 @@ Returns the assigned id (a string)."
   (unless (neat-connection-live-p conn)
     (user-error "Neat: connection is not live"))
   (let* ((id (number-to-string (cl-incf (neat-connection-next-id conn))))
-         (with-id (cons (cons "id" id) message)))
+         (with-id (cons (cons "id" id) message))
+         ;; Encode first, so a message that can't be encoded leaves no
+         ;; callback or log entry behind.
+         (bytes (neat-bencode-encode with-id)))
     (when callback
       (puthash id callback (neat-connection-pending conn)))
     (neat-client--log conn :out with-id)
-    (process-send-string (neat-connection-process conn)
-                         (neat-bencode-encode with-id))
+    (process-send-string (neat-connection-process conn) bytes)
     id))
 
 
