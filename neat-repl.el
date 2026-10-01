@@ -272,7 +272,11 @@ on the same dead connection are no-ops."
                  neat-current-connection
                  (neat-connection-live-p neat-current-connection))
         (neat-repl--handle-need-input neat-current-connection))
-      (when (member "done" status)
+      ;; A dead connection gets its own marker from
+      ;; `neat-repl--handle-disconnect'; a prompt would only invite
+      ;; input that has nowhere to go.
+      (when (and (member "done" status)
+                 (not (member "connection-closed" status)))
         (comint-output-filter proc (neat-repl--prompt))))))
 
 (defun neat-repl--handle-need-input (conn)

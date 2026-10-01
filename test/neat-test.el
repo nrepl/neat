@@ -179,6 +179,48 @@ POS is a 1-indexed buffer position."
                       (lambda () (neat--eval-string "(+ 1 2)")))))
           (expect (plist-get plist :ns) :to-equal "derived.ns"))))))
 
+(describe "neat--render-into-repl without a REPL buffer"
+  (it "reports a connection that closed under the request"
+    (let ((conn (neat-connection--make :host "nowhere" :port 1)))
+      (spy-on 'message)
+      (neat--render-into-repl
+       conn '(("id" . "1") ("status" "done" "connection-closed")))
+      (expect 'message :to-have-been-called-with
+              "neat: connection closed"))))
+
+(describe "neat"
+  :var (conn clone-callback)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 77)
+          clone-callback nil)
+    (spy-on 'neat-connect :and-return-value conn)
+    (spy-on 'neat-describe)
+    (spy-on 'neat-clone-session
+            :and-call-fake (lambda (_c cb) (setq clone-callback cb)))
+    (spy-on 'pop-to-buffer))
+
+  (after-each
+    (when-let* ((buf (neat-repl-buffer-for conn)))
+      (kill-buffer buf)))
+
+  (it "puts up the first prompt once the session is cloned"
+    (let ((neat-repl-history-file nil)
+          (neat-default-connection nil))
+      (neat "h" 77)
+      (funcall clone-callback '(("id" . "2") ("new-session" . "S")
+                                ("status" "done")))
+      (with-current-buffer (neat-repl-buffer-for conn)
+        (expect (buffer-string) :to-equal "neat> "))))
+
+  (it "doesn't put up a prompt when the connection closes first"
+    (let ((neat-repl-history-file nil)
+          (neat-default-connection nil))
+      (neat "h" 77)
+      (funcall clone-callback '(("id" . "2")
+                                ("status" "done" "connection-closed")))
+      (with-current-buffer (neat-repl-buffer-for conn)
+        (expect (buffer-string) :to-equal "")))))
+
 (describe "neat--lookup-file-path"
   (it "returns plain paths unchanged"
     (expect (neat--lookup-file-path "/tmp/foo.clj")

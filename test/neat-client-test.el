@@ -162,6 +162,72 @@
               :not :to-throw)
       (expect (gethash "1" (neat-connection-pending conn)) :to-be nil))))
 
+(describe "neat-client--flush-pending"
+  (it "hands each pending callback a connection-closed done and no err"
+    (let* ((conn (neat-connection--make))
+           (neat-connections (list conn))
+           (neat-disconnect-functions nil)
+           got)
+      (puthash "7" (lambda (m) (push m got)) (neat-connection-pending conn))
+      (neat-disconnect conn)
+      (expect got :to-equal
+              '((("id" . "7") ("status" "done" "connection-closed"))))
+      (expect (hash-table-count (neat-connection-pending conn))
+              :to-equal 0))))
+
+(describe "sync helpers"
+  (it "unregister the callback when the reply times out"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output) #'ignore))
+        (expect (neat-completions-sync conn "ma" nil 0.05) :to-be nil)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0)
+        (expect (neat-lookup-sync conn "map" nil 0.05) :to-be nil)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
+  (it "treat a connection that closes mid-request as no answer"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _) (neat-client--flush-pending conn))))
+        (expect (neat-lookup-sync conn "map" nil 1) :to-be nil))))
+
+  (it "keep what arrived before the timeout"
+    (let ((conn (neat-connection--make))
+          (sent nil))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _)
+                   (unless sent
+                     (setq sent t)
+                     (neat-client-test--push-bytes
+                      conn (neat-bencode-encode
+                            '(("id" . "1")
+                              ("completions" . ((("candidate" . "map")))))))))))
+        (expect (neat-completions-sync conn "ma" nil 0.1)
+                :to-equal '((("candidate" . "map"))))
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
+  (it "return what arrived before done"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _)
+                   (neat-client-test--push-bytes
+                    conn (neat-bencode-encode
+                          '(("id" . "1")
+                            ("completions" . ((("candidate" . "map"))))
+                            ("status" "done")))))))
+        (expect (neat-completions-sync conn "ma" nil 1)
+                :to-equal '((("candidate" . "map"))))))))
+
 (describe "neat-clone-session"
   (it "captures new-session from the response and assigns it to the connection"
     (let ((conn (neat-connection--make))

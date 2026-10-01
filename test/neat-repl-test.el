@@ -13,6 +13,23 @@
 (require 'neat-bencode)
 (require 'neat-repl)
 
+(defmacro neat-repl-test--with-repl (conn &rest body)
+  "Run BODY in a real `neat-repl-mode' buffer for a fake connection.
+CONN is bound to the connection, which has no network process; the
+buffer gets its usual comint pipe process, so rendering really
+inserts text."
+  (declare (indent 1))
+  `(let* ((neat-repl-history-file nil)
+          (,conn (neat-connection--make :host "h" :port 1))
+          (buf (neat-repl-create-buffer ,conn)))
+     (unwind-protect
+         (with-current-buffer buf ,@body)
+       (kill-buffer buf))))
+
+(defun neat-repl-test--text ()
+  "Return the current buffer's text without properties."
+  (buffer-substring-no-properties (point-min) (point-max)))
+
 (describe "neat-repl--input-complete-p"
   (it "accepts an empty string as complete"
     (expect (neat-repl--input-complete-p "") :to-be-truthy))
@@ -80,6 +97,18 @@
       (neat-repl--render-response
        '(("id" . "1") ("value" . "nil") ("status" "done")))
       (expect neat-repl--current-ns :to-equal "stays"))))
+
+(describe "neat-repl--render-response (connection-closed)"
+  (it "inserts a prompt on a normal done"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--render-response '(("id" . "1") ("status" "done")))
+      (expect (neat-repl-test--text) :to-equal "neat> ")))
+
+  (it "doesn't prompt for input on the synthesized connection-closed done"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--render-response
+       '(("id" . "1") ("status" "done" "connection-closed")))
+      (expect (neat-repl-test--text) :to-equal ""))))
 
 (describe "neat-repl--handle-need-input"
   (it "reads input from the minibuffer and sends it via the stdin op"
