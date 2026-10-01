@@ -357,7 +357,7 @@ on the same dead connection are no-ops."
           (neat-repl--emit-output ";; connection closed\n"
                                   'neat-repl-error))))))
 
-;;;###autoload
+;; Not autoloaded, for the same reason as the hook below.
 (add-hook 'neat-disconnect-functions #'neat-repl--handle-disconnect)
 
 (cl-defstruct (neat-repl--request (:constructor neat-repl--request-create)

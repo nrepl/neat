@@ -162,7 +162,8 @@ disconnects it, \\[neat-connections-refresh] reloads from
       (when (derived-mode-p 'neat-connections-mode)
         (neat-connections-refresh)))))
 
-;;;###autoload
+;; Not autoloaded: the function only exists once this file is loaded,
+;; and the buffer it refreshes can't exist before that either.
 (add-hook 'neat-disconnect-functions #'neat--connections-buffer-refresh)
 
 ;;;###autoload
