@@ -98,6 +98,61 @@ inserts text."
        '(("id" . "1") ("value" . "nil") ("status" "done")))
       (expect neat-repl--current-ns :to-equal "stays"))))
 
+(defun neat-repl-test--render-all (responses)
+  "Render RESPONSES in order as replies to one request."
+  (let ((request (neat-repl--request-create)))
+    (dolist (resp responses)
+      (neat-repl--render-response resp request))))
+
+(describe "neat-repl--render-response (output)"
+  (it "renders a value and then a prompt on done"
+    (neat-repl-test--with-repl _conn
+      (neat-repl-test--render-all
+       '((("id" . "1") ("value" . "3"))
+         (("id" . "1") ("status" "done"))))
+      (expect (neat-repl-test--text) :to-equal "3\nneat> ")))
+
+  (it "renders out before the value"
+    (neat-repl-test--with-repl _conn
+      (neat-repl-test--render-all
+       '((("id" . "1") ("out" . "hi\n"))
+         (("id" . "1") ("value" . ":ok"))
+         (("id" . "1") ("status" "done"))))
+      (expect (neat-repl-test--text) :to-equal "hi\n:ok\nneat> ")
+      (expect (get-text-property 1 'face) :to-be 'neat-repl-output)))
+
+  (it "shows err and drops an ex that came after it"
+    (neat-repl-test--with-repl _conn
+      (neat-repl-test--render-all
+       '((("id" . "1") ("err" . "Traceback: boom\n"))
+         (("id" . "1") ("ex" . "Traceback: boom") ("status" "eval-error"))
+         (("id" . "1") ("status" "done"))))
+      (expect (neat-repl-test--text) :to-equal "Traceback: boom\nneat> ")))
+
+  (it "drops an ex that came before err"
+    ;; nREPL sends the eval-error status with `ex' first, then `err'.
+    (neat-repl-test--with-repl _conn
+      (neat-repl-test--render-all
+       '((("id" . "1") ("ex" . "class java.lang.ArithmeticException")
+          ("status" "eval-error"))
+         (("id" . "1") ("err" . "Divide by zero\n"))
+         (("id" . "1") ("status" "done"))))
+      (expect (neat-repl-test--text) :to-equal "Divide by zero\nneat> ")))
+
+  (it "shows ex at done when nothing came on err"
+    (neat-repl-test--with-repl _conn
+      (neat-repl-test--render-all
+       '((("id" . "1") ("ex" . "boom") ("status" "eval-error"))
+         (("id" . "1") ("status" "done"))))
+      (expect (neat-repl-test--text) :to-equal "boom\nneat> ")
+      (expect (get-text-property 1 'face) :to-be 'neat-repl-error)))
+
+  (it "shows ex and done arriving together without a request"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--render-response
+       '(("id" . "1") ("ex" . "boom") ("status" "eval-error" "done")))
+      (expect (neat-repl-test--text) :to-equal "boom\nneat> "))))
+
 (describe "neat-repl--render-response (connection-closed)"
   (it "inserts a prompt on a normal done"
     (neat-repl-test--with-repl _conn
