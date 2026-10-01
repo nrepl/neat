@@ -88,15 +88,50 @@ inserts text."
        '(("id" . "1")
          ("ns" . "myapp.core")
          ("value" . "nil")
-         ("status" "done")))
+         ("status" "done"))
+       (neat-repl--request-create))
       (expect neat-repl--current-ns :to-equal "myapp.core")))
 
   (it "leaves `neat-repl--current-ns' alone when the response has no `ns'"
     (with-temp-buffer
       (setq-local neat-repl--current-ns "stays")
       (neat-repl--render-response
-       '(("id" . "1") ("value" . "nil") ("status" "done")))
-      (expect neat-repl--current-ns :to-equal "stays"))))
+       '(("id" . "1") ("value" . "nil") ("status" "done"))
+       (neat-repl--request-create))
+      (expect neat-repl--current-ns :to-equal "stays")))
+
+  (it "follows the `ns' reported for input typed into the REPL"
+    (neat-repl-test--with-repl _conn
+      (let (callback)
+        (cl-letf (((symbol-function 'neat-connection-live-p) (lambda (_) t))
+                  ((symbol-function 'neat-eval)
+                   (lambda (_c _code &rest plist)
+                     (setq callback (plist-get plist :callback)))))
+          (neat-repl--input-sender nil "(in-ns 'myapp.core)")
+          (funcall callback '(("id" . "1") ("ns" . "myapp.core")
+                              ("value" . "nil")))
+          (expect neat-repl--current-ns :to-equal "myapp.core")))))
+
+  (it "ignores the `ns' of an eval that named its own"
+    ;; The source buffer sent an explicit ns, which the server only
+    ;; binds for that eval; the REPL is still wherever it was.
+    (neat-repl-test--with-repl _conn
+      (setq neat-repl--current-ns "user")
+      (let ((request (neat-repl--request-create :ns "myapp.core")))
+        (dolist (resp '((("id" . "1") ("ns" . "myapp.core") ("value" . "nil"))
+                        (("id" . "1") ("status" "done"))))
+          (neat-repl--render-response resp request)))
+      (expect neat-repl--current-ns :to-equal "user")
+      (expect (neat-repl-test--text) :to-equal "nil\nuser> ")))
+
+  (it "follows a source-buffer eval that named no ns"
+    ;; Say it ran `(ns myapp.core)': the session really moved.
+    (neat-repl-test--with-repl _conn
+      (setq neat-repl--current-ns "user")
+      (neat-repl-test--render-all
+       '((("id" . "1") ("ns" . "myapp.core") ("value" . "nil"))
+         (("id" . "1") ("status" "done"))))
+      (expect neat-repl--current-ns :to-equal "myapp.core"))))
 
 (defun neat-repl-test--render-all (responses)
   "Render RESPONSES in order as replies to one request."

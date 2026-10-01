@@ -221,6 +221,33 @@ POS is a 1-indexed buffer position."
       (with-current-buffer (neat-repl-buffer-for conn)
         (expect (buffer-string) :to-equal "")))))
 
+(describe "source-buffer evals and the REPL's ns"
+  (it "moves the prompt only when the buffer named no ns"
+    (let* ((neat-repl-history-file nil)
+           (conn (neat-connection--make :host "h" :port 78))
+           (repl (neat-repl-create-buffer conn))
+           callback)
+      (unwind-protect
+          (cl-letf (((symbol-function 'neat--require-connection)
+                     (lambda () conn))
+                    ((symbol-function 'neat-eval)
+                     (lambda (_c _code &rest plist)
+                       (setq callback (plist-get plist :callback)))))
+            (with-temp-buffer
+              (setq neat-ns "my.ns")
+              (neat--eval-string "(+ 1 2)"))
+            (funcall callback '(("id" . "1") ("ns" . "my.ns") ("value" . "3")))
+            (expect (buffer-local-value 'neat-repl--current-ns repl)
+                    :to-be nil)
+            (with-temp-buffer
+              (neat--eval-string "(ns myapp.core)"))
+            (funcall callback '(("id" . "2") ("ns" . "myapp.core")
+                                ("value" . "nil")))
+            (expect (buffer-local-value 'neat-repl--current-ns repl)
+                    :to-equal "myapp.core"))
+        (with-current-buffer repl (setq neat-current-connection nil))
+        (kill-buffer repl)))))
+
 (describe "neat--lookup-file-path"
   (it "returns plain paths unchanged"
     (expect (neat--lookup-file-path "/tmp/foo.clj")
