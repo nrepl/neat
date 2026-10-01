@@ -118,6 +118,17 @@
       (expect (length got) :to-equal 1)
       (expect (neat-bencode-get (car got) "value") :to-equal "ok")))
 
+  (it "ends a request on unknown-session even without done"
+    (let ((conn (neat-connection--make :host "h" :port 1))
+          got)
+      (puthash "1" (lambda (m) (push m got)) (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1")
+                                   ("status" "error" "unknown-session"))))
+      (expect (neat-bencode-get (car got) "status")
+              :to-equal '("error" "unknown-session" "done"))
+      (expect (gethash "1" (neat-connection-pending conn)) :to-be nil)))
+
   (it "treats a status sent as a plain string as a list of one"
     (let ((conn (neat-connection--make))
           (got '()))
