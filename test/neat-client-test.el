@@ -219,6 +219,17 @@
        conn (neat-bencode-encode '(("id" . "1") ("out" . "x"))))
       (expect seen :to-be nil)))
 
+  (it "prunes a finished request even when its callback is quit out of"
+    (let ((conn (neat-connection--make :host "h" :port 1 :evals '("1"))))
+      (puthash "1" (lambda (_) (signal 'quit nil))
+               (neat-connection-pending conn))
+      (condition-case nil
+          (neat-client-test--push-bytes
+           conn (neat-bencode-encode '(("id" . "1") ("status" "done"))))
+        (quit nil))
+      (expect (gethash "1" (neat-connection-pending conn)) :to-be nil)
+      (expect (neat-eval-pending-p conn) :to-be nil)))
+
   (it "survives a hook function that errors (production semantics)"
     (let ((neat-unhandled-message-functions
            (list (lambda (_c _m) (error "boom"))))

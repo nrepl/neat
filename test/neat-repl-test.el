@@ -340,6 +340,18 @@ non-nil, in which case it's a source-buffer eval."
       (expect (neat-connection-session conn) :to-be nil)
       (expect 'neat-clone-session :not :to-have-been-called)))
 
+  (it "takes C-g at the offer as a no"
+    (neat-repl-test--with-repl conn
+      (setf (neat-connection-session conn) "gone")
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'y-or-n-p :and-call-fake (lambda (&rest _) (signal 'quit nil)))
+      (spy-on 'neat-clone-session)
+      (expect (neat-repl-test--render-all
+               '((("id" . "1") ("status" "error" "unknown-session" "done"))))
+              :not :to-throw)
+      (expect (neat-connection-session conn) :to-be nil)
+      (expect 'neat-clone-session :not :to-have-been-called)))
+
   (it "leaves the session alone when the reply names a different one"
     (neat-repl-test--with-repl conn
       (setf (neat-connection-session conn) "mine")

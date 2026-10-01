@@ -738,7 +738,7 @@ reply gets a `done' added if it lacks one, since nothing more can
 come for a request the server has no session for.  A message without
 a callback goes to `neat-unhandled-message-functions'.  When the
 response's status contains `done' the callback entry is pruned
-afterwards."
+before the callback runs."
   (neat-client--log conn :in message)
   (if (not (neat-bencode-dict-p message))
       (neat-client--log conn :note '(skipped "not a dict"))
@@ -756,6 +756,14 @@ afterwards."
     (let* ((id (neat-bencode-get message "id"))
            (status (neat-bencode-get message "status"))
            (callback (and id (gethash id (neat-connection-pending conn)))))
+      ;; Prune before the callback runs: one that gets quit out of
+      ;; (C-g at a prompt it opened) must not leave its request behind.
+      (when (and id (member "done" status))
+        (remhash id (neat-connection-pending conn))
+        (setf (neat-connection-evals conn)
+              (delete id (neat-connection-evals conn)))
+        (unless (neat-connection-evals conn)
+          (setf (neat-connection-stalled conn) nil)))
       (if callback
           ;; Don't let a buggy callback nuke the whole filter.  Skip the
           ;; trap when the user is debugging, so `toggle-debug-on-error'
@@ -765,13 +773,7 @@ afterwards."
             (error (message "neat: callback error: %S" err)))
         (with-demoted-errors "neat: unhandled message hook: %S"
           (run-hook-with-args 'neat-unhandled-message-functions
-                              conn message)))
-      (when (and id (member "done" status))
-        (remhash id (neat-connection-pending conn))
-        (setf (neat-connection-evals conn)
-              (delete id (neat-connection-evals conn)))
-        (unless (neat-connection-evals conn)
-          (setf (neat-connection-stalled conn) nil))))))
+                              conn message))))))
 
 (defun neat-client--sentinel (proc _event)
   "Sentinel for nREPL connection PROC.  Delegates to `neat-client--cleanup'."

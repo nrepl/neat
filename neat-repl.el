@@ -478,8 +478,11 @@ whatever comes next starts out somewhere else."
                   ((buffer-live-p buf)))
         (with-current-buffer buf
           (setq neat-repl--current-ns nil)))
-      (when (y-or-n-p
-             "Neat: the server doesn't know this session; clone a new one? ")
+      ;; C-g here means no, not a quit out of the process filter.
+      (when (condition-case nil
+                (y-or-n-p
+                 "Neat: the server doesn't know this session; clone a new one? ")
+              (quit nil))
         (neat-clone-session conn)))))
 
 (defun neat-repl--handle-unhandled-message (conn message)
