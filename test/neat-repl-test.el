@@ -663,6 +663,16 @@ non-nil, in which case it's a source-buffer eval."
       (neat-repl--kill-buffer-cleanup)
       (expect (nreverse calls) :to-equal '((close-no-wait "S-2") disconnect))))
 
+  (it "still disconnects when the close wait is quit out of"
+    (neat-repl-test--with-repl conn
+      (setf (neat-connection-session conn) "S-4")
+      (spy-on 'neat-close-session-sync
+              :and-call-fake (lambda (&rest _) (signal 'quit nil)))
+      (condition-case nil
+          (neat-repl--close-connection conn)
+        (quit nil))
+      (expect calls :to-equal '(disconnect))))
+
   (it "just disconnects when there's no session to close"
     (neat-repl-test--with-repl _conn
       (spy-on 'bury-buffer)

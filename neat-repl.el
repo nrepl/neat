@@ -590,15 +590,17 @@ underlying connection."
   "Close CONN's session on the server, then disconnect CONN.
 Without the `close' the session would outlive the REPL on the server.
 Unless NO-WAIT is non-nil we wait briefly for the server to confirm,
-so its reply doesn't run into a socket that's already gone."
-  (when (and (neat-connection-live-p conn)
-             (neat-connection-session conn)
-             (neat-op-supported-p conn "close"))
-    (ignore-errors
-      (if no-wait
-          (neat-close-session conn)
-        (neat-close-session-sync conn))))
-  (neat-disconnect conn))
+so its reply doesn't run into a socket that's already gone.  Cutting
+the wait short with \\[keyboard-quit] still disconnects."
+  (unwind-protect
+      (when (and (neat-connection-live-p conn)
+                 (neat-connection-session conn)
+                 (neat-op-supported-p conn "close"))
+        (ignore-errors
+          (if no-wait
+              (neat-close-session conn)
+            (neat-close-session-sync conn))))
+    (neat-disconnect conn)))
 
 (defun neat-repl-quit ()
   "Close the REPL's session, disconnect, and bury this buffer."
