@@ -463,29 +463,90 @@ inserts text."
       (expect (neat-repl-test--text) :to-equal "neat> "))))
 
 (describe "neat-repl--handle-need-input"
+  :var (conn need-input)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1 :session "S-conn")
+          need-input '(("id" . "7") ("session" . "S-eval")
+                       ("status" "need-input"))))
+
   (it "reads input from the minibuffer and sends it via the stdin op"
-    (let ((conn (neat-connection--make :host "h" :port 1))
-          captured)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) "world"))
-                ((symbol-function 'neat-stdin)
-                 (lambda (_c input &rest _) (setq captured input))))
-        (neat-repl--handle-need-input conn)
-        ;; The handler must append a trailing newline so read-line-style
-        ;; readers actually finish.
-        (expect captured :to-equal "world\n"))))
+    (spy-on 'read-from-minibuffer :and-return-value "world")
+    (spy-on 'neat-stdin)
+    (neat-repl--handle-need-input conn need-input)
+    ;; The handler must append a trailing newline so read-line-style
+    ;; readers actually finish, and answer in the session that asked.
+    (expect 'neat-stdin
+            :to-have-been-called-with conn "world\n" :session "S-eval"))
+
+  (it "falls back to the connection's session"
+    (let (sent)
+      (spy-on 'read-from-minibuffer :and-return-value "x")
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-repl--handle-need-input
+         conn '(("id" . "7") ("status" "need-input")))
+        (expect (neat-bencode-get (car (neat-bencode-decode sent)) "session")
+                :to-equal "S-conn"))))
+
+  (it "sends an empty stdin as end-of-file"
+    (spy-on 'read-from-minibuffer
+            :and-call-fake (lambda (&rest _)
+                             ;; What `neat-repl-stdin-eof' does.
+                             (setq neat-repl--stdin-eof t)
+                             "half a line"))
+    (spy-on 'neat-stdin)
+    (neat-repl--handle-need-input conn need-input)
+    (expect 'neat-stdin :to-have-been-called-with conn "" :session "S-eval"))
+
+  (it "binds the end-of-file key in the prompt's keymap"
+    (expect (lookup-key neat-repl-stdin-map (kbd "C-c C-d"))
+            :to-be 'neat-repl-stdin-eof))
 
   (it "interrupts the eval when the user hits C-g at the prompt"
-    (let ((conn (neat-connection--make :host "h" :port 1))
-          interrupted)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) (signal 'quit nil)))
-                ((symbol-function 'neat-interrupt)
-                 (lambda (c &rest _) (setq interrupted c)))
-                ((symbol-function 'neat-stdin)
-                 (lambda (&rest _) (error "should not send stdin"))))
-        (neat-repl--handle-need-input conn)
-        (expect interrupted :to-be conn)))))
+    (spy-on 'read-from-minibuffer :and-call-fake
+            (lambda (&rest _) (signal 'quit nil)))
+    (spy-on 'neat-interrupt)
+    (spy-on 'neat-stdin)
+    (neat-repl--handle-need-input conn need-input)
+    (expect (butlast (spy-calls-args-for 'neat-interrupt 0))
+            :to-equal (list conn "S-eval" "7"))
+    (expect 'neat-stdin :not :to-have-been-called))
+
+  (it "reports an interrupt from the prompt that didn't happen"
+    (spy-on 'read-from-minibuffer :and-call-fake
+            (lambda (&rest _) (signal 'quit nil)))
+    (spy-on 'neat-interrupt
+            :and-call-fake (lambda (_c _s _id cb)
+                             (funcall cb '(("id" . "9")
+                                           ("status" "interrupt-id-mismatch"
+                                            "done")))))
+    (spy-on 'message)
+    (neat-repl--handle-need-input conn need-input)
+    (expect 'message :to-have-been-called-with
+            "Neat: that eval isn't the one running"))
+
+  (it "sends end-of-file on C-g when the server can't interrupt"
+    (setf (neat-connection-capabilities conn) '(("ops" . (("eval") ("stdin")))))
+    (spy-on 'read-from-minibuffer :and-call-fake
+            (lambda (&rest _) (signal 'quit nil)))
+    (spy-on 'neat-interrupt)
+    (spy-on 'neat-stdin)
+    (neat-repl--handle-need-input conn need-input)
+    (expect 'neat-interrupt :not :to-have-been-called)
+    (expect 'neat-stdin :to-have-been-called-with conn "" :session "S-eval")))
+
+(describe "neat-repl--render-response (need-input)"
+  (it "hands need-input to the stdin prompt, with the response"
+    (neat-repl-test--with-repl conn
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'neat-repl--handle-need-input)
+      (let ((resp '(("id" . "1") ("session" . "S") ("status" "need-input"))))
+        (neat-repl--render-response resp)
+        (expect 'neat-repl--handle-need-input
+                :to-have-been-called-with conn resp)
+        ;; Still waiting on the eval, so no prompt yet.
+        (expect (neat-repl-test--text) :to-equal "")))))
 
 (describe "neat-repl--handle-disconnect"
   (it "sets the dead flag on the conn's REPL buffer"

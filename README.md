@@ -219,7 +219,9 @@ status.
 Three usual suspects:
 
 - The eval is reading from stdin. Look at the minibuffer for a
-  `stdin:` prompt and answer it. `C-g` interrupts the read.
+  `stdin` prompt and answer it, REPL buffer or not. `C-c C-d` there
+  sends end-of-file, and `C-g` interrupts the eval (or sends
+  end-of-file, if the server can't interrupt).
 - The connection died. The mode-line shows `[closed]` and a
   `;; connection closed` line appears in the REPL buffer.
 - The eval is actually running, just slowly. `C-c C-c` in the REPL

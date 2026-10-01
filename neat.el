@@ -308,8 +308,7 @@ request named, if any (see `neat-repl--request')."
                   ((cdr due) (message "neat: %s" (cdr due)))
                   ((member "connection-closed" status)
                    (message "neat: connection closed")))
-            (when (member "unknown-session" status)
-              (neat-repl--offer-new-session conn resp))))))))
+            (neat-repl--answer-status conn resp)))))))
 
 (defun neat--eval-string (code &optional pos)
   "Evaluate CODE on the active connection.

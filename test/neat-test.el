@@ -206,6 +206,15 @@ POS is a 1-indexed buffer position."
       (expect 'message :to-have-been-called-with "neat: %s" "boom")
       (expect 'message :not :to-have-been-called-with "neat: %s" "error")))
 
+  (it "prompts in the minibuffer when the eval needs input"
+    (let ((conn (neat-connection--make :host "nowhere" :port 1))
+          (resp '(("id" . "1") ("session" . "S") ("status" "need-input"))))
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'neat-repl--handle-need-input)
+      (funcall (neat--eval-callback conn) resp)
+      (expect 'neat-repl--handle-need-input
+              :to-have-been-called-with conn resp)))
+
   (it "reports an error status in the echo area"
     (let ((conn (neat-connection--make :host "nowhere" :port 1)))
       (spy-on 'message)

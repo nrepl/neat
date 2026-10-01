@@ -416,18 +416,26 @@ own, and an `ex' only shows up if `done' comes in the same message."
       (when (cdr due)
         (comint-output-filter
          proc (propertize (format ";; %s\n" (cdr due)) 'face 'neat-repl-error)))
-      (when (and (member "need-input" status)
-                 neat-current-connection
-                 (neat-connection-live-p neat-current-connection))
-        (neat-repl--handle-need-input neat-current-connection))
-      (when (and (member "unknown-session" status) neat-current-connection)
-        (neat-repl--offer-new-session neat-current-connection resp))
+      (when neat-current-connection
+        (neat-repl--answer-status neat-current-connection resp))
       ;; A dead connection gets its own marker from
       ;; `neat-repl--handle-disconnect'; a prompt would only invite
       ;; input that has nowhere to go.
       (when (and (member "done" status)
                  (not (member "connection-closed" status)))
         (neat-repl--insert-prompt)))))
+
+(defun neat-repl--answer-status (conn resp)
+  "Deal with the statuses in RESP from CONN that need the user.
+A `need-input' gets answered from the minibuffer and an
+`unknown-session' brings up the offer of a new session.  Shared by
+the REPL and by source-buffer evals with no REPL buffer to go to."
+  (let ((status (neat-bencode-get resp "status")))
+    (when (and (member "need-input" status)
+               (neat-connection-live-p conn))
+      (neat-repl--handle-need-input conn resp))
+    (when (member "unknown-session" status)
+      (neat-repl--offer-new-session conn resp))))
 
 (defun neat-repl--offer-new-session (conn resp)
   "Offer to clone a fresh session after CONN's server disowned one.
@@ -472,26 +480,58 @@ that already finished."
 (add-hook 'neat-unhandled-message-functions
           #'neat-repl--handle-unhandled-message)
 
-(defun neat-repl--handle-need-input (conn)
+(defvar neat-repl-stdin-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map minibuffer-local-map)
+    (define-key map (kbd "C-c C-d") #'neat-repl-stdin-eof)
+    map)
+  "Keymap for the minibuffer prompt that answers a `need-input'.")
+
+(defvar neat-repl--stdin-eof nil
+  "Non-nil once the `stdin' prompt has been answered with end-of-file.")
+
+(defun neat-repl-stdin-eof ()
+  "Answer the pending `stdin' prompt with end-of-file instead of a line."
+  (interactive)
+  (setq neat-repl--stdin-eof t)
+  (exit-minibuffer))
+
+(defun neat-repl--handle-need-input (conn resp)
   "Prompt the user for a line of input and ship it to CONN via the `stdin' op.
 Server-side reads (`read-line', `input', ...) trigger a `need-input'
-status response that pauses the eval until the client replies with a
-`stdin' op.  A trailing newline is appended so `read-line'-style readers
-finish.  `C-g' at the prompt interrupts the eval instead."
-  (condition-case nil
-      (let ((input (read-string "stdin: ")))
-        (neat-stdin conn (concat input "\n")))
-    (quit (neat-interrupt conn))))
+status response RESP that pauses the eval until the client replies
+with a `stdin' op.  The reply goes to RESP's session, which needn't
+be CONN's current one.  A trailing newline is appended so
+`read-line'-style readers finish.
 
-(defun neat-repl--interrupt (conn)
+\\<neat-repl-stdin-map>\\[neat-repl-stdin-eof] at the prompt sends \
+end-of-file (an empty `stdin') instead.
+`C-g' interrupts the eval, or sends end-of-file when the server can't
+interrupt, so the eval doesn't sit waiting forever."
+  (let ((session (neat-bencode-get resp "session"))
+        (neat-repl--stdin-eof nil))
+    (condition-case nil
+        (let ((input (read-from-minibuffer
+                      (substitute-command-keys
+                       (concat "stdin (\\<neat-repl-stdin-map>"
+                               "\\[neat-repl-stdin-eof] for EOF): "))
+                      nil neat-repl-stdin-map)))
+          (neat-stdin conn (if neat-repl--stdin-eof "" (concat input "\n"))
+                      :session session))
+      (quit (if (neat-op-supported-p conn "interrupt")
+                (neat-repl--interrupt conn session (neat-bencode-get resp "id"))
+              (neat-stdin conn "" :session session))))))
+
+(defun neat-repl--interrupt (conn &optional session interrupt-id)
   "Ask CONN's server to interrupt the eval it's running.
-Signals a `user-error' up front when the server doesn't advertise
-`interrupt', and reports any reply that says the interrupt didn't
-happen.  Without that the user would just see nothing happen."
+SESSION and INTERRUPT-ID go to `neat-interrupt'.  Signals a
+`user-error' up front when the server doesn't advertise `interrupt',
+and reports any reply that says the interrupt didn't happen.  Without
+that the user would just see nothing happen."
   (unless (neat-op-supported-p conn "interrupt")
     (user-error "Neat: the server doesn't support interrupt"))
   (neat-interrupt
-   conn nil nil
+   conn session interrupt-id
    (lambda (resp)
      (let ((status (neat-bencode-get resp "status")))
        (cond ((member "unknown-op" status)
