@@ -38,13 +38,21 @@
 OBJ may be:
   - an integer
   - a string (encoded as a bytestring; multibyte strings are UTF-8 encoded)
-  - a list of encodable values
+  - a list or vector of encodable values
   - an alist whose keys are strings or symbols (encoded as a bencode dict
     with keys sorted lexicographically by their byte representation)
+
+A list whose every element is a cons headed by a string or symbol
+looks like an alist, so it goes out as a dict; use a vector to send
+a list of lists.  nil is rejected rather than guessed at, since it
+could stand for an empty list, an empty dict or a missing value.
+Send [] for an empty list.
 
 Signals `neat-bencode-error' for values that do not match any of the
 above."
   (cond
+   ((null obj)
+    (signal 'neat-bencode-error (list "cannot encode nil")))
    ((integerp obj)
     (neat-bencode--ascii (format "i%de" obj)))
    ((stringp obj)
@@ -65,7 +73,7 @@ above."
                                    (neat-bencode-encode (cdr cell))))
                          pairs)
                ,(neat-bencode--ascii "e")))))
-   ((listp obj)
+   ((or (listp obj) (vectorp obj))
     (apply #'concat
            `(,(neat-bencode--ascii "l")
              ,@(mapcar #'neat-bencode-encode obj)
