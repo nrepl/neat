@@ -179,12 +179,12 @@ POS is a 1-indexed buffer position."
                       (lambda () (neat--eval-string "(+ 1 2)")))))
           (expect (plist-get plist :ns) :to-equal "derived.ns"))))))
 
-(describe "neat--render-into-repl without a REPL buffer"
+(describe "neat--eval-callback without a REPL buffer"
   (it "reports a connection that closed under the request"
     (let ((conn (neat-connection--make :host "nowhere" :port 1)))
       (spy-on 'message)
-      (neat--render-into-repl
-       conn '(("id" . "1") ("status" "done" "connection-closed")))
+      (funcall (neat--eval-callback conn)
+               '(("id" . "1") ("status" "done" "connection-closed")))
       (expect 'message :to-have-been-called-with
               "neat: connection closed"))))
 

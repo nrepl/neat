@@ -320,12 +320,13 @@ Otherwise insert a newline so the user can keep typing the form."
      ((string-empty-p trimmed)
       (neat-repl--insert-prompt))
      (t
-      (neat-eval
-       conn trimmed
-       :callback (lambda (resp)
-                   (when (buffer-live-p buffer)
-                     (with-current-buffer buffer
-                       (neat-repl--render-response resp)))))))))
+      (let ((request (neat-repl--request-create)))
+        (neat-eval
+         conn trimmed
+         :callback (lambda (resp)
+                     (when (buffer-live-p buffer)
+                       (with-current-buffer buffer
+                         (neat-repl--render-response resp request))))))))))
 
 (defun neat-repl--handle-disconnect (conn)
   "Mark CONN's REPL buffer as closed, if it has one.
@@ -343,9 +344,23 @@ on the same dead connection are no-ops."
 ;;;###autoload
 (add-hook 'neat-disconnect-functions #'neat-repl--handle-disconnect)
 
-(defun neat-repl--render-response (resp)
-  "Insert the user-visible parts of nREPL response RESP into the buffer."
-  (let ((proc (get-buffer-process (current-buffer)))
+(cl-defstruct (neat-repl--request (:constructor neat-repl--request-create)
+                                  (:copier nil))
+  "Rendering state for one request whose responses land in a REPL buffer.
+SAW-ERR is set once the request has printed anything on `err'.  EX
+holds the last `ex' it reported, held back until `done' and dropped
+if `err' had something to say: Basilisp and jank put the whole
+traceback in both fields, and nREPL's `ex' is only the exception
+class, so `err' is the better of the two whenever there is one."
+  saw-err ex)
+
+(defun neat-repl--render-response (resp &optional request)
+  "Insert the user-visible parts of nREPL response RESP into the buffer.
+REQUEST is the `neat-repl--request' RESP answers; pass the same one
+for every response to a request.  Without it RESP is rendered on its
+own, and an `ex' only shows up if `done' comes in the same message."
+  (let ((request (or request (neat-repl--request-create)))
+        (proc (get-buffer-process (current-buffer)))
         (value (neat-bencode-get resp "value"))
         (out (neat-bencode-get resp "out"))
         (err (neat-bencode-get resp "err"))
@@ -356,19 +371,25 @@ on the same dead connection are no-ops."
     ;; reflects any `(in-ns ...)' or namespace-switching form.
     (when ns
       (setq neat-repl--current-ns ns))
+    (when ex
+      (setf (neat-repl--request-ex request) ex))
     (when proc
       (when out
         (comint-output-filter
          proc (propertize out 'face 'neat-repl-output)))
       (when err
+        (setf (neat-repl--request-saw-err request) t)
         (comint-output-filter
          proc (propertize err 'face 'neat-repl-error)))
       (when value
         (comint-output-filter
          proc (concat (propertize value 'face 'neat-repl-value) "\n")))
-      (when ex
+      (when (and (member "done" status)
+                 (neat-repl--request-ex request)
+                 (not (neat-repl--request-saw-err request)))
         (comint-output-filter
-         proc (propertize (format "%s\n" ex) 'face 'neat-repl-error)))
+         proc (propertize (format "%s\n" (neat-repl--request-ex request))
+                          'face 'neat-repl-error)))
       (when (and (member "need-input" status)
                  neat-current-connection
                  (neat-connection-live-p neat-current-connection))

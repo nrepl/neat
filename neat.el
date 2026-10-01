@@ -277,18 +277,22 @@ Empty input clears the override."
   (or (neat-active-connection)
       (user-error "Neat: no active connection; M-x neat to start one")))
 
-(defun neat--render-into-repl (conn resp)
-  "If CONN has a REPL buffer, render RESP there; otherwise message a brief result."
-  (let ((repl (neat-repl-buffer-for conn)))
-    (if (buffer-live-p repl)
-        (with-current-buffer repl
-          (neat-repl--render-response resp))
-      (let ((value (neat-bencode-get resp "value"))
-            (err (neat-bencode-get resp "err")))
-        (cond (err (message "neat: %s" (string-trim err)))
-              (value (message "=> %s" value))
-              ((member "connection-closed" (neat-bencode-get resp "status"))
-               (message "neat: connection closed")))))))
+(defun neat--eval-callback (conn)
+  "Return a callback that renders one request's responses from CONN.
+Each response is rendered in CONN's REPL buffer if it has one;
+otherwise a brief result is messaged."
+  (let ((request (neat-repl--request-create)))
+    (lambda (resp)
+      (let ((repl (neat-repl-buffer-for conn)))
+        (if (buffer-live-p repl)
+            (with-current-buffer repl
+              (neat-repl--render-response resp request))
+          (let ((value (neat-bencode-get resp "value"))
+                (err (neat-bencode-get resp "err")))
+            (cond (err (message "neat: %s" (string-trim err)))
+                  (value (message "=> %s" value))
+                  ((member "connection-closed" (neat-bencode-get resp "status"))
+                   (message "neat: connection closed")))))))))
 
 (defun neat--eval-string (code &optional pos)
   "Evaluate CODE on the active connection.
@@ -310,7 +314,7 @@ namespace is whatever `neat-buffer-ns-function' returns."
          (ns (funcall neat-buffer-ns-function)))
     (neat-eval conn code
                :file file :line line :column column :ns ns
-               :callback (lambda (resp) (neat--render-into-repl conn resp)))))
+               :callback (neat--eval-callback conn))))
 
 (defun neat-eval-last-sexp ()
   "Evaluate the sexp before point."
@@ -364,7 +368,7 @@ not necessarily resolvable on the server side."
      conn contents
      :file-path buffer-file-name
      :file-name (file-name-nondirectory buffer-file-name)
-     :callback (lambda (resp) (neat--render-into-repl conn resp)))))
+     :callback (neat--eval-callback conn))))
 
 (defun neat-switch-to-repl ()
   "Pop to the REPL buffer for the active connection."
