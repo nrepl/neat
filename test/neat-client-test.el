@@ -72,17 +72,79 @@
     ;; A stray `e' is the simplest malformed input: `neat-bencode-decode'
     ;; signals `neat-bencode-error' on it.  The drain has to catch that
     ;; or the filter cycle dies silently.
+    (let* ((conn (neat-connection--make))
+           (neat-connections (list conn))
+           (debug-on-error nil))
+      (expect (neat-client-test--push-bytes conn "e") :not :to-throw)))
+
+  (it "dispatches what precedes malformed bytes, then disconnects"
+    ;; Past the bad byte there's no telling where the next message
+    ;; starts, so the trailing (valid-looking) message must not be
+    ;; dispatched; the pending callback hears about the disconnect
+    ;; instead.
+    (let* ((conn (neat-connection--make))
+           (neat-connections (list conn))
+           (neat-disconnect-functions nil)
+           (debug-on-error nil)
+           (got '()))
+      (puthash "1" (lambda (m) (push m got))
+               (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (concat (neat-bencode-encode '(("id" . "1") ("value" . "ok")))
+                    "e"
+                    (neat-bencode-encode '(("id" . "1") ("value" . "late")))))
+      (setq got (nreverse got))
+      (expect (length got) :to-equal 2)
+      (expect (neat-bencode-get (car got) "value") :to-equal "ok")
+      (expect (neat-bencode-get (cadr got) "value") :to-be nil)
+      (expect (member "done" (neat-bencode-get (cadr got) "status"))
+              :to-be-truthy)
+      (expect neat-connections :to-equal nil)
+      (expect (neat-connection-recv-buffer conn) :to-equal "")))
+
+  (it "skips top-level values that aren't dicts"
     (let ((conn (neat-connection--make))
-          (debug-on-error nil))
-      (expect (neat-client-test--push-bytes conn "e") :not :to-throw)
-      ;; And after dropping the bad bytes, a subsequent good message
-      ;; still dispatches normally.
-      (let ((got nil))
-        (puthash "1" (lambda (m) (push m got))
-                 (neat-connection-pending conn))
-        (neat-client-test--push-bytes
-         conn (neat-bencode-encode '(("id" . "1") ("value" . "ok"))))
-        (expect (length got) :to-equal 1))))
+          (got '()))
+      (puthash "1" (lambda (m) (push m got))
+               (neat-connection-pending conn))
+      (expect (neat-client-test--push-bytes
+               conn (concat (neat-bencode-encode 42)
+                            (neat-bencode-encode "id")
+                            (neat-bencode-encode ["id" "1"])
+                            (neat-bencode-encode '(("id" . "1")
+                                                   ("value" . "ok")))))
+              :not :to-throw)
+      (expect (length got) :to-equal 1)
+      (expect (neat-bencode-get (car got) "value") :to-equal "ok")))
+
+  (it "treats a status sent as a plain string as a list of one"
+    (let ((conn (neat-connection--make))
+          (got '()))
+      (puthash "1" (lambda (m) (push m got)) (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1") ("status" . "done"))))
+      (expect (neat-bencode-get (car got) "status") :to-equal '("done"))
+      ;; So the request does finish.
+      (expect (gethash "1" (neat-connection-pending conn)) :to-be nil)))
+
+  (it "treats any other status that isn't a list as no status"
+    (let ((conn (neat-connection--make))
+          (got '()))
+      (puthash "1" (lambda (m)
+                     ;; The usual callback idiom must not choke.
+                     (member "done" (neat-bencode-get m "status"))
+                     (push m got))
+               (neat-connection-pending conn))
+      (expect (neat-client-test--push-bytes
+               conn (concat (neat-bencode-encode '(("id" . "1")
+                                                   ("status" . 7)))
+                            (neat-bencode-encode '(("id" . "1")
+                                                   ("value" . "next")))))
+              :not :to-throw)
+      ;; The message behind the bad one still went through.
+      (expect (length got) :to-equal 2)
+      (expect (assoc "status" (cadr got)) :to-be nil)
+      (expect (gethash "1" (neat-connection-pending conn)) :not :to-be nil)))
 
   (it "shields the filter from a buggy callback (production semantics)"
     ;; The dispatch wraps callbacks in `condition-case-unless-debug',

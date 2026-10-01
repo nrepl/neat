@@ -493,8 +493,9 @@ bencode messages as it can."
 Malformed bencode signals `neat-bencode-error', which would otherwise
 propagate up out of the process filter and silently kill the cycle.
 We catch it here, log the offending bytes via the message log, and
-clear the recv buffer -- the protocol state is unrecoverable past
-the bad message, but at least the filter survives.  As elsewhere,
+disconnect.  Past a bad byte there's no telling where the next
+message starts, so reading on would only misparse whatever follows;
+disconnecting at least flushes every pending callback.  As elsewhere,
 `debug-on-error' steps the guard aside so the bug is visible during
 interactive debugging."
   (condition-case-unless-debug err
@@ -512,29 +513,42 @@ interactive debugging."
                                         (neat-connection-recv-buffer conn)
                                         err))
      (setf (neat-connection-recv-buffer conn) (unibyte-string))
-     (message "neat: dropped malformed bencode from %s:%s (%S)"
+     (message "neat: malformed bencode from %s:%s, disconnecting (%S)"
               (neat-connection-host conn)
               (neat-connection-port conn)
-              err))))
+              err)
+     (neat-disconnect conn))))
 
 (defun neat-client--dispatch (conn message)
   "Look up MESSAGE's callback in CONN and invoke it.
 
-When the response's status contains `done' the callback entry is
-pruned afterwards."
+A server can send any bencode value, so MESSAGE gets checked first:
+anything other than a dict is logged and skipped, a `status' sent as
+a plain string counts as a list of one, and any other `status' that
+isn't a list is dropped as if it weren't there.  Either would
+otherwise blow up in here or in the callback.  When the response's
+status contains `done' the callback entry is pruned afterwards."
   (neat-client--log conn :in message)
-  (let* ((id (neat-bencode-get message "id"))
-         (status (neat-bencode-get message "status"))
-         (callback (and id (gethash id (neat-connection-pending conn)))))
-    (when callback
-      ;; Don't let a buggy callback nuke the whole filter.  Skip the
-      ;; trap when the user is debugging, so `toggle-debug-on-error'
-      ;; reveals the underlying problem instead of swallowing it.
-      (condition-case-unless-debug err
-          (funcall callback message)
-        (error (message "neat: callback error: %S" err))))
-    (when (and id (member "done" status))
-      (remhash id (neat-connection-pending conn)))))
+  (if (not (neat-bencode-dict-p message))
+      (neat-client--log conn :note '(skipped "not a dict"))
+    (let ((status (neat-bencode-get message "status")))
+      (cond
+       ((stringp status)
+        (setf (alist-get "status" message nil nil #'equal) (list status)))
+       ((not (listp status))
+        (setq message (cl-remove "status" message :key #'car :test #'equal)))))
+    (let* ((id (neat-bencode-get message "id"))
+           (status (neat-bencode-get message "status"))
+           (callback (and id (gethash id (neat-connection-pending conn)))))
+      (when callback
+        ;; Don't let a buggy callback nuke the whole filter.  Skip the
+        ;; trap when the user is debugging, so `toggle-debug-on-error'
+        ;; reveals the underlying problem instead of swallowing it.
+        (condition-case-unless-debug err
+            (funcall callback message)
+          (error (message "neat: callback error: %S" err))))
+      (when (and id (member "done" status))
+        (remhash id (neat-connection-pending conn))))))
 
 (defun neat-client--sentinel (proc _event)
   "Sentinel for nREPL connection PROC.  Delegates to `neat-client--cleanup'."

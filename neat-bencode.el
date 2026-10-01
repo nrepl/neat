@@ -60,7 +60,7 @@ above."
       (concat (neat-bencode--ascii (number-to-string (length bytes)))
               (neat-bencode--ascii ":")
               bytes)))
-   ((neat-bencode--alistp obj)
+   ((neat-bencode-dict-p obj)
     (let ((pairs (cl-sort (mapcar (lambda (cell)
                                     (cons (neat-bencode--key-string (car cell))
                                           (cdr cell)))
@@ -99,10 +99,11 @@ above."
    ((symbolp k) (symbol-name k))
    (t (signal 'neat-bencode-error (list "non-string dict key" k)))))
 
-(defun neat-bencode--alistp (obj)
-  "Return non-nil if OBJ has the shape of a dict-style alist.
-That is, every cell of OBJ is a cons whose car is a string or symbol.
-An empty list is not an alist (it encodes as a list)."
+(defun neat-bencode-dict-p (obj)
+  "Return non-nil if OBJ has the shape of a bencode dict.
+That is, every cell of OBJ is a cons whose car is a string or symbol:
+what `neat-bencode-encode' sends as a dict, and what a decoded dict
+looks like.  An empty list is not a dict (it encodes as a list)."
   (and (consp obj)
        (consp (car obj))
        (cl-every (lambda (cell)
