@@ -237,6 +237,10 @@ its current namespace is. To pin a source buffer:
 - Or swap `neat-buffer-ns-function` for one that derives the ns from
   the buffer (parsing a `(ns ...)` form, reading file metadata, etc.).
 
+A namespace the server doesn't know (a typo in `neat-ns`, say) shows
+up as a `;; namespace not found: ...` line in the REPL, or in the echo
+area when there's no REPL buffer.
+
 ### `M-x neat` doesn't autofill the port
 
 The port comes from the nearest `.nrepl-port` file walking up from

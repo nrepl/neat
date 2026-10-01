@@ -186,7 +186,34 @@ POS is a 1-indexed buffer position."
       (funcall (neat--eval-callback conn)
                '(("id" . "1") ("status" "done" "connection-closed")))
       (expect 'message :to-have-been-called-with
-              "neat: connection closed"))))
+              "neat: connection closed")))
+
+  (it "doesn't follow an err with a bare error"
+    (let* ((conn (neat-connection--make :host "nowhere" :port 1))
+           (callback (neat--eval-callback conn)))
+      (spy-on 'message)
+      (funcall callback '(("id" . "1") ("err" . "boom\n")))
+      (funcall callback '(("id" . "1") ("status" "error" "done")))
+      (expect 'message :to-have-been-called-with "neat: %s" "boom")
+      (expect 'message :not :to-have-been-called-with "neat: %s" "error")))
+
+  (it "shows an ex when nothing came on err"
+    (let* ((conn (neat-connection--make :host "nowhere" :port 1))
+           (callback (neat--eval-callback conn)))
+      (spy-on 'message)
+      (funcall callback '(("id" . "1") ("ex" . "boom") ("status" "eval-error")))
+      (funcall callback '(("id" . "1") ("status" "error" "done")))
+      (expect 'message :to-have-been-called-with "neat: %s" "boom")
+      (expect 'message :not :to-have-been-called-with "neat: %s" "error")))
+
+  (it "reports an error status in the echo area"
+    (let ((conn (neat-connection--make :host "nowhere" :port 1)))
+      (spy-on 'message)
+      (funcall (neat--eval-callback conn)
+               '(("id" . "1") ("ns" . "my.typo")
+                 ("status" "done" "error" "namespace-not-found")))
+      (expect 'message :to-have-been-called-with
+              "neat: %s" "namespace not found: my.typo"))))
 
 (describe "neat"
   :var (conn clone-callback)

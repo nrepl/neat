@@ -362,54 +362,96 @@ traceback in both fields, and nREPL's `ex' is only the exception
 class, so `err' is the better of the two whenever there is one."
   ns saw-err ex)
 
+(defun neat-repl--request-update (request resp)
+  "Note RESP's `err' and `ex' on REQUEST and return what's due now.
+The result is (EX . PROBLEM).  EX is an `ex' to show now: at `done',
+when nothing came on `err'.  PROBLEM is the error status line from
+`neat-response-error', leaving out a bare `error' that an earlier
+`err' or `ex' already explained."
+  (when (neat-bencode-get resp "err")
+    (setf (neat-repl--request-saw-err request) t))
+  (when-let* ((ex (neat-bencode-get resp "ex")))
+    (setf (neat-repl--request-ex request) ex))
+  (let ((saw-err (neat-repl--request-saw-err request))
+        (ex (neat-repl--request-ex request)))
+    (cons (and (member "done" (neat-bencode-get resp "status"))
+               (not saw-err)
+               ex)
+          (neat-response-error resp (or saw-err ex)))))
+
 (defun neat-repl--render-response (resp &optional request)
   "Insert the user-visible parts of nREPL response RESP into the buffer.
 REQUEST is the `neat-repl--request' RESP answers; pass the same one
 for every response to a request.  Without it RESP is rendered on its
 own, and an `ex' only shows up if `done' comes in the same message."
-  (let ((request (or request (neat-repl--request-create)))
-        (proc (get-buffer-process (current-buffer)))
-        (value (neat-bencode-get resp "value"))
-        (out (neat-bencode-get resp "out"))
-        (err (neat-bencode-get resp "err"))
-        (ex (neat-bencode-get resp "ex"))
-        (ns (neat-bencode-get resp "ns"))
-        (status (neat-bencode-get resp "status")))
+  (let* ((request (or request (neat-repl--request-create)))
+         (proc (get-buffer-process (current-buffer)))
+         (value (neat-bencode-get resp "value"))
+         (out (neat-bencode-get resp "out"))
+         (err (neat-bencode-get resp "err"))
+         (ns (neat-bencode-get resp "ns"))
+         (status (neat-bencode-get resp "status"))
+         (due (neat-repl--request-update request resp)))
     ;; Track the namespace as soon as we see one so the next prompt
-    ;; reflects any `(in-ns ...)' or namespace-switching form.
-    (when (and ns (not (neat-repl--request-ns request)))
+    ;; reflects any `(in-ns ...)' or namespace-switching form.  A
+    ;; `namespace-not-found' reply names the namespace that isn't there.
+    (when (and ns (not (neat-repl--request-ns request))
+               (not (member "namespace-not-found" status)))
       (setq neat-repl--current-ns ns)
       (when neat-current-connection
         (setf (neat-connection-ns neat-current-connection) ns)))
-    (when ex
-      (setf (neat-repl--request-ex request) ex))
     (when proc
       (when out
         (comint-output-filter
          proc (propertize out 'face 'neat-repl-output)))
       (when err
-        (setf (neat-repl--request-saw-err request) t)
         (comint-output-filter
          proc (propertize err 'face 'neat-repl-error)))
       (when value
         (comint-output-filter
          proc (concat (propertize value 'face 'neat-repl-value) "\n")))
-      (when (and (member "done" status)
-                 (neat-repl--request-ex request)
-                 (not (neat-repl--request-saw-err request)))
+      (when (car due)
         (comint-output-filter
-         proc (propertize (format "%s\n" (neat-repl--request-ex request))
-                          'face 'neat-repl-error)))
+         proc (propertize (format "%s\n" (car due)) 'face 'neat-repl-error)))
+      (when (cdr due)
+        (comint-output-filter
+         proc (propertize (format ";; %s\n" (cdr due)) 'face 'neat-repl-error)))
       (when (and (member "need-input" status)
                  neat-current-connection
                  (neat-connection-live-p neat-current-connection))
         (neat-repl--handle-need-input neat-current-connection))
+      (when (and (member "unknown-session" status) neat-current-connection)
+        (neat-repl--offer-new-session neat-current-connection resp))
       ;; A dead connection gets its own marker from
       ;; `neat-repl--handle-disconnect'; a prompt would only invite
       ;; input that has nowhere to go.
       (when (and (member "done" status)
                  (not (member "connection-closed" status)))
         (neat-repl--insert-prompt)))))
+
+(defun neat-repl--offer-new-session (conn resp)
+  "Offer to clone a fresh session after CONN's server disowned one.
+RESP is the `unknown-session' reply.  When it's about CONN's current
+session that session is dropped from CONN, so later requests stop
+sending it, and the user gets asked whether to clone a new one.
+Declining leaves CONN without a session, which nREPL answers with a
+throwaway session for every request.  Either way the namespace the
+old session was in is forgotten too, by CONN and by its REPL, since
+whatever comes next starts out somewhere else."
+  (let ((session (neat-bencode-get resp "session"))
+        (current (neat-connection-session conn)))
+    (when (and current
+               (or (null session) (equal session current))
+               (neat-connection-live-p conn))
+      (setf (neat-connection-session conn) nil
+            (neat-connection-ns conn) nil)
+      (when-let* ((buf (neat-repl-buffer-for conn))
+                  ((buffer-live-p buf)))
+        (with-current-buffer buf
+          (setq neat-repl--current-ns nil)))
+      (when (y-or-n-p
+             "Neat: the server doesn't know this session; clone a new one? ")
+        (neat-clone-session conn)))))
 
 (defun neat-repl--handle-unhandled-message (conn message)
   "Show `out' and `err' from MESSAGE above the prompt in CONN's REPL.

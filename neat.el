@@ -299,11 +299,17 @@ request named, if any (see `neat-repl--request')."
             (with-current-buffer repl
               (neat-repl--render-response resp request))
           (let ((value (neat-bencode-get resp "value"))
-                (err (neat-bencode-get resp "err")))
+                (err (neat-bencode-get resp "err"))
+                (status (neat-bencode-get resp "status"))
+                (due (neat-repl--request-update request resp)))
             (cond (err (message "neat: %s" (string-trim err)))
                   (value (message "=> %s" value))
-                  ((member "connection-closed" (neat-bencode-get resp "status"))
-                   (message "neat: connection closed")))))))))
+                  ((car due) (message "neat: %s" (string-trim (car due))))
+                  ((cdr due) (message "neat: %s" (cdr due)))
+                  ((member "connection-closed" status)
+                   (message "neat: connection closed")))
+            (when (member "unknown-session" status)
+              (neat-repl--offer-new-session conn resp))))))))
 
 (defun neat--eval-string (code &optional pos)
   "Evaluate CODE on the active connection.
