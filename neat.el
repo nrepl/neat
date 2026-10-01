@@ -277,11 +277,12 @@ Empty input clears the override."
   (or (neat-active-connection)
       (user-error "Neat: no active connection; M-x neat to start one")))
 
-(defun neat--eval-callback (conn)
+(defun neat--eval-callback (conn &optional ns)
   "Return a callback that renders one request's responses from CONN.
 Each response is rendered in CONN's REPL buffer if it has one;
-otherwise a brief result is messaged."
-  (let ((request (neat-repl--request-create)))
+otherwise a brief result is messaged.  NS is the namespace the
+request named, if any (see `neat-repl--request')."
+  (let ((request (neat-repl--request-create :ns ns)))
     (lambda (resp)
       (let ((repl (neat-repl-buffer-for conn)))
         (if (buffer-live-p repl)
@@ -314,7 +315,7 @@ namespace is whatever `neat-buffer-ns-function' returns."
          (ns (funcall neat-buffer-ns-function)))
     (neat-eval conn code
                :file file :line line :column column :ns ns
-               :callback (neat--eval-callback conn))))
+               :callback (neat--eval-callback conn ns))))
 
 (defun neat-eval-last-sexp ()
   "Evaluate the sexp before point."

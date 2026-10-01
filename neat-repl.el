@@ -347,12 +347,20 @@ on the same dead connection are no-ops."
 (cl-defstruct (neat-repl--request (:constructor neat-repl--request-create)
                                   (:copier nil))
   "Rendering state for one request whose responses land in a REPL buffer.
+NS is the namespace the request named explicitly, if any.  The prompt
+follows the `ns' a reply reports only when NS is nil.  A request that
+names its own `ns' gets it bound for that one eval and then dropped,
+so following it would leave the prompt showing a namespace the REPL
+isn't in.  Without one the eval runs in the session's namespace, and
+an `(ns ...)' or `(in-ns ...)' in it really does move the session,
+whether it was typed into the REPL or sent from a source buffer.
+
 SAW-ERR is set once the request has printed anything on `err'.  EX
 holds the last `ex' it reported, held back until `done' and dropped
 if `err' had something to say: Basilisp and jank put the whole
 traceback in both fields, and nREPL's `ex' is only the exception
 class, so `err' is the better of the two whenever there is one."
-  saw-err ex)
+  ns saw-err ex)
 
 (defun neat-repl--render-response (resp &optional request)
   "Insert the user-visible parts of nREPL response RESP into the buffer.
@@ -369,7 +377,7 @@ own, and an `ex' only shows up if `done' comes in the same message."
         (status (neat-bencode-get resp "status")))
     ;; Track the namespace as soon as we see one so the next prompt
     ;; reflects any `(in-ns ...)' or namespace-switching form.
-    (when ns
+    (when (and ns (not (neat-repl--request-ns request)))
       (setq neat-repl--current-ns ns))
     (when ex
       (setf (neat-repl--request-ex request) ex))
