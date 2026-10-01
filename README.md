@@ -33,25 +33,24 @@ edges - this is the start of the road, not the end.
 ecosystem rather than a Clojure-only protocol. That effort has three
 strands:
 
-1. **An official nREPL specification.** Today the [nREPL][nrepl] project
+1. An official nREPL specification. Today the [nREPL][nrepl] project
    is the de facto spec; a formal version is being drafted at
    [nrepl/spec.nrepl.org][spec]. `neat` aims to keep pressure on the spec
    to stay genuinely language-agnostic by being a client that refuses to
    silently assume Clojure.
-2. **Reference clients.** A spec without independent client
+2. Reference clients. A spec without independent client
    implementations is wishful thinking. `neat` is one such reference
    client, intentionally built on Emacs builtins and free of
    Clojure-specific helpers, so it can act as a baseline for what
    "compliant" should mean on the client side.
-3. **A compatibility test suite.** The parameterised integration suite
-   under [`test/neat-integration-test.el`](test/neat-integration-test.el)
-   already runs the same assertions against multiple servers (Clojure,
-   Babashka, Basilisp), and divergences between them get surfaced as
-   real findings rather than mysterious bugs. The long-term goal is
-   to grow this into a portable suite any nREPL server can self-check
-   against.
+3. A compatibility test suite. That one lives in its own project,
+   [proof][proof]. It talks to a server the way clients do, runs a set
+   of checks and tells you what's broken and which clients it breaks.
+   If you work on an nREPL server, that's the tool to reach for.
+   neat's own integration suite only tests the client.
 
 [spec]: https://github.com/nrepl/spec.nrepl.org
+[proof]: https://github.com/nrepl/proof
 
 ## Installation
 
@@ -318,31 +317,19 @@ eldev lint        # lint
 eldev test        # run Buttercup suites
 ```
 
-The default suite is the fast one. There's also an integration suite that
-boots real nREPL servers as subprocesses and exercises the full client.
-It's gated behind an env var since starting a server adds a few seconds:
+The default suite is the fast one. There's also an integration suite
+that starts an nREPL server (`nrepl/nrepl`, through the Clojure CLI)
+and drives the client and the REPL buffer end to end: rendering,
+stdin, interrupts, error statuses and late output. It's gated behind
+an env var since starting the JVM adds a few seconds, and it's
+skipped when `clojure` isn't on your PATH:
 
 ```
 NEAT_INTEGRATION=1 eldev test
 ```
 
-The integration suite walks `neat-it--server-impls` in
-`test/neat-integration-test.el` and registers a block per implementation
-that's installed on PATH. Currently:
-
-| Implementation | Executable | How to install |
-|----------------|------------|----------------|
-| Clojure (`nrepl/nrepl`) | `clojure` | [clojure.org/guides/install_clojure](https://clojure.org/guides/install_clojure) |
-| [Babashka](https://babashka.org) | `bb` | `brew install borkdude/brew/babashka` |
-| [Basilisp](https://basilisp.readthedocs.io) (Python) | `basilisp` | `pipx install basilisp` |
-| [let-go](https://github.com/nooga/let-go) (Go) | `let-go` | `go install github.com/nooga/let-go@latest` |
-
-Add more entries to the list to teach the suite about your favorite
-nREPL implementation. Most servers just need an executable that prints
-a port banner on stdout; for ones that can't or won't announce an
-OS-assigned port (let-go, currently), the entry can supply a
-`:port-fn` that pre-allocates a free port for the framework to pass
-in.
+The suite tests neat, not the server. To find out how well a server
+speaks nREPL, run [proof][proof] against it.
 
 ## License
 
