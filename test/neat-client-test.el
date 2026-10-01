@@ -62,7 +62,8 @@
       (expect (gethash "1" (neat-connection-pending conn)) :to-be nil)))
 
   (it "ignores messages whose id has no callback registered"
-    (let ((conn (neat-connection--make)))
+    (let ((conn (neat-connection--make))
+          (neat-unhandled-message-functions nil))
       (neat-client-test--push-bytes
        conn (neat-bencode-encode '(("id" . "99") ("value" . "?"))))
       ;; If we got here without throwing, we're good.
@@ -161,6 +162,63 @@
                      '(("id" . "1") ("status" . ("done")))))
               :not :to-throw)
       (expect (gethash "1" (neat-connection-pending conn)) :to-be nil))))
+
+(describe "neat-unhandled-message-functions"
+  :var (conn seen)
+  (before-each
+    (setq conn (neat-connection--make)
+          seen nil))
+
+  (it "gets messages that carry no id"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (c m) (push (cons c m) seen)))))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("out" . "hi\n"))))
+      (expect (length seen) :to-equal 1)
+      (expect (car (car seen)) :to-be conn)
+      (expect (neat-bencode-get (cdr (car seen)) "out") :to-equal "hi\n")))
+
+  (it "gets messages for an id that was never registered"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (_c m) (push m seen)))))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "99") ("out" . "?"))))
+      (expect (length seen) :to-equal 1)))
+
+  (it "gets output for a request that already finished, and a second done"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (_c m) (push m seen))))
+          (got 0))
+      (puthash "1" (lambda (_) (cl-incf got)) (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (concat (neat-bencode-encode '(("id" . "1") ("status" "done")))
+                    (neat-bencode-encode '(("id" . "1") ("out" . "late\n")))
+                    (neat-bencode-encode '(("id" . "1") ("status" "done")))))
+      (expect got :to-equal 1)
+      (setq seen (nreverse seen))
+      (expect (length seen) :to-equal 2)
+      (expect (neat-bencode-get (car seen) "out") :to-equal "late\n")
+      (expect (neat-bencode-get (cadr seen) "status") :to-equal '("done"))))
+
+  (it "doesn't get messages a pending callback claims"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (_c m) (push m seen)))))
+      (puthash "1" #'ignore (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1") ("out" . "x"))))
+      (expect seen :to-be nil)))
+
+  (it "survives a hook function that errors (production semantics)"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (_c _m) (error "boom"))))
+          (debug-on-error nil)
+          (got nil))
+      (puthash "2" (lambda (m) (push m got)) (neat-connection-pending conn))
+      (expect (neat-client-test--push-bytes
+               conn (concat (neat-bencode-encode '(("out" . "x")))
+                            (neat-bencode-encode '(("id" . "2") ("value" . "1")))))
+              :not :to-throw)
+      (expect (length got) :to-equal 1))))
 
 (describe "neat-client--flush-pending"
   (it "hands each pending callback a connection-closed done and no err"

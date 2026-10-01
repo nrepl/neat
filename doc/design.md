@@ -94,6 +94,12 @@ The single-callback model is what every responding nREPL client we
 surveyed (monroe, CIDER, vim-fireplace) uses. We're not breaking
 that pattern.
 
+Some messages don't belong to any pending request. Servers send `out`
+with no `id` at all, or keep sending it for a request that's already
+`done` (think of a `future` that prints after the eval has returned).
+Those go to `neat-unhandled-message-functions`, and the REPL buffer
+prints their output above the prompt.
+
 ### Op discovery via `describe`, no hardcoded Clojurisms
 
 nREPL is a protocol; servers advertise the ops they implement via the
