@@ -294,6 +294,38 @@
         (expect (hash-table-count (neat-connection-pending conn))
                 :to-equal 0))))
 
+  (it "don't take a wait cut short for a stalled server"
+    ;; A quit, or the throw `while-no-input' does when a completion UI
+    ;; gets new input, says nothing about the server.
+    (let ((conn (neat-connection--make :evals '("5"))))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _) (throw 'neat-test-input t))))
+        (catch 'neat-test-input
+          (neat-completions-sync conn "ma" nil 1))
+        (expect (neat-connection-stalled conn) :to-be nil)
+        (condition-case nil
+            (cl-letf (((symbol-function 'accept-process-output)
+                       (lambda (&rest _) (signal 'quit nil))))
+              (neat-completions-sync conn "ma" nil 1))
+          (quit nil))
+        (expect (neat-connection-stalled conn) :to-be nil)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
+  (it "unregister the callback when the wait is quit out of"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _) (signal 'quit nil))))
+        (condition-case nil
+            (neat-completions-sync conn "ma" nil 1)
+          (quit nil))
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
   (it "return what arrived before done"
     (let ((conn (neat-connection--make)))
       (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))

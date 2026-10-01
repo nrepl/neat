@@ -554,9 +554,10 @@ CONN's process output for up to TIMEOUT seconds.
 Returns the responses that arrived, in the order they came: all of
 them once `done' arrives, or whatever came before TIMEOUT ran out.
 If the connection went away first, the last one is neat's own
-`connection-closed' reply (see `neat-send').  Giving up unregisters
-the callback, so a reply that never comes doesn't leave it behind in
-the pending table."
+`connection-closed' reply (see `neat-send').  Giving up, on the
+timeout or on \\[keyboard-quit], unregisters the callback, so a reply
+that never comes doesn't leave it behind in the pending table.  Only
+a real timeout counts toward `neat-tooling-stalled-p'."
   (let ((deadline (+ (float-time) timeout))
         responses done)
     (let ((id (funcall send
@@ -564,11 +565,15 @@ the pending table."
                          (push resp responses)
                          (when (member "done" (neat-bencode-get resp "status"))
                            (setq done t))))))
-      (while (and (not done)
-                  (< (float-time) deadline))
-        (accept-process-output (neat-connection-process conn) 0.05))
-      (unless done
-        (remhash id (neat-connection-pending conn)))
+      (unwind-protect
+          (while (and (not done)
+                      (< (float-time) deadline))
+            (accept-process-output (neat-connection-process conn) 0.05))
+        (unless done
+          (remhash id (neat-connection-pending conn))))
+      ;; Only reached when the wait ended by itself: a quit, or the
+      ;; throw `while-no-input' does for a completion UI, says nothing
+      ;; about the server.
       (neat-client--note-tooling conn done))
     (nreverse responses)))
 
