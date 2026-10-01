@@ -126,6 +126,7 @@ inserts text."
     ;; binds for that eval; the REPL is still wherever it was.
     (neat-repl-test--with-repl conn
       (setq neat-repl--current-ns "user")
+      (neat-repl--insert-prompt)
       (let ((request (neat-repl--request-create :ns "myapp.core")))
         (dolist (resp '((("id" . "1") ("ns" . "myapp.core") ("value" . "nil"))
                         (("id" . "1") ("status" "done"))))
@@ -134,19 +135,38 @@ inserts text."
       (expect (neat-connection-ns conn) :to-be nil)
       (expect (neat-repl-test--text) :to-equal "nil\nuser> ")))
 
+  (it "redraws a waiting prompt when a source-buffer eval moves the session"
+    (neat-repl-test--with-repl _conn
+      (setq neat-repl--current-ns "user")
+      (neat-repl--insert-prompt)
+      (goto-char (point-max))
+      (insert "(foo")
+      (neat-repl-test--render-all
+       '((("id" . "1") ("ns" . "myapp.core") ("value" . "nil"))
+         (("id" . "1") ("status" "done")))
+       'source)
+      (expect (neat-repl-test--text) :to-equal "nil\nmyapp.core> (foo")
+      (expect (buffer-substring-no-properties
+               neat-repl--prompt-start
+               (process-mark (get-buffer-process (current-buffer))))
+              :to-equal "myapp.core> ")))
+
   (it "follows a source-buffer eval that named no ns"
     ;; Say it ran `(ns myapp.core)': the session really moved.
     (neat-repl-test--with-repl conn
       (setq neat-repl--current-ns "user")
       (neat-repl-test--render-all
        '((("id" . "1") ("ns" . "myapp.core") ("value" . "nil"))
-         (("id" . "1") ("status" "done"))))
+         (("id" . "1") ("status" "done")))
+       'source)
       (expect neat-repl--current-ns :to-equal "myapp.core")
       (expect (neat-connection-ns conn) :to-equal "myapp.core"))))
 
-(defun neat-repl-test--render-all (responses)
-  "Render RESPONSES in order as replies to one request."
-  (let ((request (neat-repl--request-create)))
+(defun neat-repl-test--render-all (responses &optional source)
+  "Render RESPONSES in order as replies to one request.
+The request counts as input typed into the REPL, unless SOURCE is
+non-nil, in which case it's a source-buffer eval."
+  (let ((request (neat-repl--request-create :from-repl (not source))))
     (dolist (resp responses)
       (neat-repl--render-response resp request))))
 
@@ -193,30 +213,78 @@ inserts text."
       (expect (neat-repl-test--text) :to-equal "boom\nneat> ")
       (expect (get-text-property 1 'face) :to-be 'neat-repl-error)))
 
-  (it "shows ex and done arriving together without a request"
+  (it "shows ex and done arriving together in one message"
     (neat-repl-test--with-repl _conn
-      (neat-repl--render-response
-       '(("id" . "1") ("ex" . "boom") ("status" "eval-error" "done")))
+      (neat-repl-test--render-all
+       '((("id" . "1") ("ex" . "boom") ("status" "eval-error" "done"))))
       (expect (neat-repl-test--text) :to-equal "boom\nneat> "))))
+
+(describe "neat-repl--render-response (source-buffer evals)"
+  (it "puts the result above the waiting prompt instead of after it"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--insert-prompt)
+      (neat-repl-test--render-all
+       '((("id" . "1") ("out" . "hi\n"))
+         (("id" . "1") ("value" . "3"))
+         (("id" . "1") ("status" "done")))
+       'source)
+      (expect (neat-repl-test--text) :to-equal "hi\n3\nneat> ")))
+
+  (it "leaves a single prompt when there's nothing to show"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--insert-prompt)
+      (neat-repl-test--render-all '((("id" . "1") ("status" "done"))) 'source)
+      (expect (neat-repl-test--text) :to-equal "neat> ")))
+
+  (it "doesn't prompt while input typed into the REPL is still running"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--insert-prompt)
+      ;; What sending input does.
+      (setq neat-repl--prompt-start nil)
+      (neat-repl-test--render-all
+       '((("id" . "2") ("value" . "3")) (("id" . "2") ("status" "done")))
+       'source)
+      (expect (neat-repl-test--text) :to-equal "neat> 3\n")
+      (neat-repl-test--render-all '((("id" . "1") ("status" "done"))))
+      (expect (neat-repl-test--text) :to-equal "neat> 3\nneat> "))))
+
+(describe "neat-repl--insert-prompt"
+  (it "doesn't stack a second prompt on one that's waiting"
+    (neat-repl-test--with-repl _conn
+      (neat-repl--insert-prompt)
+      (neat-repl--insert-prompt)
+      (expect (neat-repl-test--text) :to-equal "neat> ")))
+
+  (it "comes back after clearing the buffer"
+    (neat-repl-test--with-repl conn
+      (neat-repl--insert-prompt)
+      (neat-repl--handle-unhandled-message conn '(("out" . "noise\n")))
+      (neat-repl-clear-buffer)
+      (expect (neat-repl-test--text) :to-equal "neat> ")
+      (neat-repl--handle-unhandled-message conn '(("out" . "late\n")))
+      (expect (neat-repl-test--text) :to-equal "late\nneat> "))))
 
 (describe "neat-repl--render-response (error statuses)"
   (it "shows namespace-not-found as a comment line"
+    ;; Typically a source buffer's `neat-ns' with a typo in it.
     (neat-repl-test--with-repl _conn
-      (neat-repl--render-response
-       '(("id" . "1") ("ns" . "my.typo")
-         ("status" "done" "error" "namespace-not-found")))
+      (neat-repl--insert-prompt)
+      (neat-repl-test--render-all
+       '((("id" . "1") ("ns" . "my.typo")
+          ("status" "done" "error" "namespace-not-found")))
+       'source)
       (expect (neat-repl-test--text)
               :to-equal ";; namespace not found: my.typo\nneat> ")))
 
   (it "shows unknown-op as a comment line"
     (neat-repl-test--with-repl _conn
-      (neat-repl--render-response
-       '(("id" . "1") ("status" "error" "unknown-op" "done")))
+      (neat-repl-test--render-all
+       '((("id" . "1") ("status" "error" "unknown-op" "done"))))
       (expect (neat-repl-test--text) :to-equal ";; unknown op\nneat> ")))
 
   (it "shows a bare error as a comment line"
     (neat-repl-test--with-repl _conn
-      (neat-repl--render-response '(("id" . "1") ("status" "error" "done")))
+      (neat-repl-test--render-all '((("id" . "1") ("status" "error" "done"))))
       (expect (neat-repl-test--text) :to-equal ";; error\nneat> ")))
 
   (it "doesn't add a bare error line after err already explained it"
@@ -254,9 +322,9 @@ inserts text."
       (spy-on 'neat-connection-live-p :and-return-value t)
       (spy-on 'y-or-n-p :and-return-value t)
       (spy-on 'neat-clone-session)
-      (neat-repl--render-response
-       '(("id" . "1") ("session" . "gone")
-         ("status" "error" "unknown-session" "done")))
+      (neat-repl-test--render-all
+       '((("id" . "1") ("session" . "gone")
+          ("status" "error" "unknown-session" "done"))))
       (expect (neat-repl-test--text) :to-equal ";; unknown session\nneat> ")
       (expect (neat-connection-session conn) :to-be nil)
       (expect 'neat-clone-session :to-have-been-called-with conn)))
@@ -286,13 +354,13 @@ inserts text."
 (describe "neat-repl--render-response (connection-closed)"
   (it "inserts a prompt on a normal done"
     (neat-repl-test--with-repl _conn
-      (neat-repl--render-response '(("id" . "1") ("status" "done")))
+      (neat-repl-test--render-all '((("id" . "1") ("status" "done"))))
       (expect (neat-repl-test--text) :to-equal "neat> ")))
 
   (it "doesn't prompt for input on the synthesized connection-closed done"
     (neat-repl-test--with-repl _conn
-      (neat-repl--render-response
-       '(("id" . "1") ("status" "done" "connection-closed")))
+      (neat-repl-test--render-all
+       '((("id" . "1") ("status" "done" "connection-closed"))))
       (expect (neat-repl-test--text) :to-equal ""))))
 
 (describe "neat-repl--handle-unhandled-message"
@@ -323,8 +391,10 @@ inserts text."
   (it "keeps landing above the prompt after an eval finishes"
     (neat-repl-test--with-repl conn
       (neat-repl--insert-prompt)
-      (neat-repl--render-response '(("id" . "1") ("value" . "3")))
-      (neat-repl--render-response '(("id" . "1") ("status" "done")))
+      ;; What sending input does.
+      (setq neat-repl--prompt-start nil)
+      (neat-repl-test--render-all
+       '((("id" . "1") ("value" . "3")) (("id" . "1") ("status" "done"))))
       (neat-repl--handle-unhandled-message conn '(("out" . "late\n")))
       (expect (neat-repl-test--text) :to-equal "neat> 3\nlate\nneat> ")))
 
