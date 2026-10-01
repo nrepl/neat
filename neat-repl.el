@@ -561,11 +561,25 @@ underlying connection."
     (erase-buffer)
     (neat-repl--insert-prompt)))
 
+(defun neat-repl--close-connection (conn &optional no-wait)
+  "Close CONN's session on the server, then disconnect CONN.
+Without the `close' the session would outlive the REPL on the server.
+Unless NO-WAIT is non-nil we wait briefly for the server to confirm,
+so its reply doesn't run into a socket that's already gone."
+  (when (and (neat-connection-live-p conn)
+             (neat-connection-session conn)
+             (neat-op-supported-p conn "close"))
+    (ignore-errors
+      (if no-wait
+          (neat-close-session conn)
+        (neat-close-session-sync conn))))
+  (neat-disconnect conn))
+
 (defun neat-repl-quit ()
-  "Disconnect from the nREPL server and bury this buffer."
+  "Close the REPL's session, disconnect, and bury this buffer."
   (interactive)
   (when neat-current-connection
-    (neat-disconnect neat-current-connection)
+    (neat-repl--close-connection neat-current-connection)
     (setq neat-current-connection nil))
   (let ((proc (get-buffer-process (current-buffer))))
     (when (process-live-p proc)
@@ -573,12 +587,15 @@ underlying connection."
   (bury-buffer))
 
 (defun neat-repl--kill-buffer-cleanup ()
-  "Tear down the connection, persist history, and stop the pipe process."
+  "Persist history, close the session, disconnect, and stop the pipe process.
+The `close' goes out without waiting for the reply: a kill shouldn't
+stall on a busy or wedged server."
   (when comint-input-ring-file-name
     (ignore-errors (comint-write-input-ring)))
   (when (and neat-current-connection
              (neat-connection-live-p neat-current-connection))
-    (ignore-errors (neat-disconnect neat-current-connection)))
+    (ignore-errors
+      (neat-repl--close-connection neat-current-connection 'no-wait)))
   (let ((proc (get-buffer-process (current-buffer))))
     (when (process-live-p proc)
       (delete-process proc))))
