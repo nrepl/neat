@@ -1,18 +1,20 @@
-;;; neat-integration-test.el --- Live nREPL integration tests  -*- lexical-binding: t; -*-
+;;; neat-integration-test.el --- End-to-end tests against nREPL  -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
-;; Live integration tests against real nREPL implementations.  Gated
-;; behind NEAT_INTEGRATION because spinning up real servers adds a few
-;; seconds to the suite and may need network access on the first run
-;; (e.g. to fetch the Clojure nREPL dependency).
+;; End-to-end tests that drive the client and the REPL buffer against
+;; a real nREPL server (the reference implementation, started through
+;; the Clojure CLI).  They cover what the unit tests can only fake with
+;; canned messages: REPL rendering, the need-input round trip,
+;; interrupts, error statuses and late output, as they come off a real
+;; wire.
 ;;
-;; Each entry in `neat-it--server-impls' below describes one
-;; implementation.  At load time we walk the list, and for every impl
-;; whose executable is on PATH we register a `describe' block that
-;; runs the same set of assertions.  Implementations that aren't
-;; installed locally are silently skipped, so contributors can run
-;; whichever subset they have.
+;; Whether a server speaks nREPL properly is a different question, and
+;; proof (https://github.com/nrepl/proof) is the tool for that one.
+;;
+;; Gated behind NEAT_INTEGRATION because booting the JVM adds a few
+;; seconds to the suite and the first run needs network access to
+;; fetch nREPL.  Skipped when `clojure' isn't on PATH.
 ;;
 ;; Run with:
 ;;
@@ -22,133 +24,53 @@
 
 (require 'buttercup)
 (require 'cl-lib)
-(require 'neat-bencode)
-(require 'neat-client)
+(require 'neat)
+
+(defconst neat-it--command
+  '("clojure" "-Sdeps" "{:deps {nrepl/nrepl {:mvn/version \"1.3.0\"}}}"
+    "-M" "-m" "nrepl.cmdline" "--port" "0")
+  "Command that starts the nREPL server the suite talks to.")
+
+(defconst neat-it--port-regexp "nREPL server started on port \\([0-9]+\\)"
+  "Regexp matching the server's banner; group 1 is the port.")
+
+(defconst neat-it--startup-timeout 120
+  "Seconds to wait for the server banner.")
 
 
-;;;; Server descriptors
-
-(defconst neat-it--clojure-deps
-  "{:deps {nrepl/nrepl {:mvn/version \"1.3.0\"}}}")
-
-(defconst neat-it--server-impls
-  `((:name "Clojure"
-     :executable "clojure"
-     :command-fn ,(lambda ()
-                    (list "clojure" "-Sdeps" neat-it--clojure-deps
-                          "-M" "-m" "nrepl.cmdline" "--port" "0"))
-     :port-regexp "nREPL server started on port \\([0-9]+\\)"
-     :startup-timeout 120)
-    (:name "Babashka"
-     :executable "bb"
-     :command-fn ,(lambda () (list "bb" "nrepl-server" "localhost:0"))
-     :port-regexp "Started nREPL server at [^:]+:\\([0-9]+\\)"
-     :startup-timeout 30)
-    (:name "Basilisp"
-     :executable "basilisp"
-     :command-fn ,(lambda () (list "basilisp" "nrepl-server"))
-     ;; Basilisp prints the same banner shape as nrepl/nrepl, so we
-     ;; can reuse the Clojure regex verbatim.
-     :port-regexp "nREPL server started on port \\([0-9]+\\)"
-     :startup-timeout 30)
-    (:name "let-go"
-     :executable "let-go"
-     ;; let-go's `-p 0' is broken upstream (banner and .nrepl-port both
-     ;; say `0' while the server listens on a random ephemeral port), so
-     ;; we pre-allocate a free port and pass it explicitly.  The regex
-     ;; here is just a readiness signal -- the port we use is the one
-     ;; we picked, not whatever's in the banner.
-     :port-fn ,#'neat-it--free-port
-     :command-fn ,(lambda (port)
-                    (list "let-go" "-n" "-p" (number-to-string port)))
-     :port-regexp "nREPL server started"
-     :startup-timeout 30))
-  "Implementations the integration suite knows how to drive.
-
-Each entry is a plist:
-  :name             human-readable label.
-  :executable       the binary the suite skips if absent from PATH.
-  :command-fn       returns the process command list.  Called with no
-                    args by default, or with a pre-allocated port when
-                    `:port-fn' is provided.
-  :port-regexp      regex matched against stdout.  When `:port-fn' is
-                    absent, group 1 must capture the port the server
-                    chose; when `:port-fn' is provided, the match just
-                    signals \"server is up\".
-  :port-fn          optional zero-arg fn returning a free port the
-                    framework reserves before launching.  Use for
-                    servers that don't reliably announce the OS-assigned
-                    port back on stdout.
-  :startup-timeout  seconds to wait for the readiness signal.")
-
-
-;;;; Subprocess lifecycle
+;;;; Server lifecycle
 
 (defvar neat-it--server-process nil)
 (defvar neat-it--server-port nil)
 (defvar neat-it--server-output "")
-(defvar neat-it--server-ready nil)
-(defvar neat-it--port-regexp nil)
-
-(defun neat-it--free-port ()
-  "Return a TCP port number that's free on 127.0.0.1 right now.
-There's a small race window between us closing the listener and the
-subprocess claiming the port; on a quiet test machine it doesn't bite."
-  (let* ((proc (make-network-process
-                :name "neat-it-port-finder"
-                :host "127.0.0.1"
-                :service t
-                :server t
-                :family 'ipv4
-                :noquery t))
-         (port (process-contact proc :service)))
-    (delete-process proc)
-    port))
 
 (defun neat-it--server-filter (_proc chunk)
-  "Watch the server's output CHUNK for the readiness signal.
-Captures the port from regex group 1 when the port wasn't
-pre-allocated; otherwise just flips `neat-it--server-ready' once
-the banner appears."
+  "Collect the server's output CHUNK and pick the port out of the banner."
   (setq neat-it--server-output (concat neat-it--server-output chunk))
-  (when (and (not neat-it--server-ready)
+  (when (and (not neat-it--server-port)
              (string-match neat-it--port-regexp neat-it--server-output))
-    (unless neat-it--server-port
-      (setq neat-it--server-port
-            (string-to-number (match-string 1 neat-it--server-output))))
-    (setq neat-it--server-ready t)))
+    (setq neat-it--server-port
+          (string-to-number (match-string 1 neat-it--server-output)))))
 
-(defun neat-it--start-server (impl)
-  "Boot the nREPL server described by IMPL and return its port.
-Errors out if the readiness banner doesn't appear within the impl's
-timeout."
-  (let* ((port-fn (plist-get impl :port-fn))
-         (port (and port-fn (funcall port-fn)))
-         (cmd (if port
-                  (funcall (plist-get impl :command-fn) port)
-                (funcall (plist-get impl :command-fn))))
-         (timeout (or (plist-get impl :startup-timeout) 60)))
-    (setq neat-it--server-port port
-          neat-it--server-output ""
-          neat-it--server-ready nil
-          neat-it--port-regexp (plist-get impl :port-regexp))
-    (let ((proc (make-process
-                 :name (format "neat-it-%s" (plist-get impl :name))
-                 :buffer nil
-                 :command cmd
-                 :filter #'neat-it--server-filter
-                 :noquery t
-                 :connection-type 'pipe)))
-      (setq neat-it--server-process proc)
-      (let ((deadline (+ (float-time) timeout)))
-        (while (and (not neat-it--server-ready)
-                    (process-live-p proc)
-                    (< (float-time) deadline))
-          (accept-process-output proc 0.5))))
-    (unless neat-it--server-ready
-      (error "Neat: %s nREPL server failed to start: %s"
-             (plist-get impl :name) neat-it--server-output))
-    neat-it--server-port))
+(defun neat-it--start-server ()
+  "Boot the nREPL server and return its port."
+  (setq neat-it--server-port nil
+        neat-it--server-output ""
+        neat-it--server-process
+        (make-process :name "neat-it-nrepl"
+                      :buffer nil
+                      :command neat-it--command
+                      :filter #'neat-it--server-filter
+                      :noquery t
+                      :connection-type 'pipe))
+  (let ((deadline (+ (float-time) neat-it--startup-timeout)))
+    (while (and (not neat-it--server-port)
+                (process-live-p neat-it--server-process)
+                (< (float-time) deadline))
+      (accept-process-output neat-it--server-process 0.5)))
+  (or neat-it--server-port
+      (error "Neat: nREPL server failed to start: %s"
+             neat-it--server-output)))
 
 (defun neat-it--stop-server ()
   "Terminate the test nREPL server, if any."
@@ -156,108 +78,142 @@ timeout."
     (kill-process neat-it--server-process))
   (setq neat-it--server-process nil
         neat-it--server-port nil
-        neat-it--server-output ""
-        neat-it--server-ready nil
-        neat-it--port-regexp nil))
+        neat-it--server-output ""))
 
-(defun neat-it--wait-until (conn predicate &optional timeout)
-  "Pump CONN's process output until PREDICATE returns non-nil or TIMEOUT elapses.
-TIMEOUT defaults to 10 seconds."
-  (let ((deadline (+ (float-time) (or timeout 10))))
+
+;;;; Helpers
+
+(defun neat-it--wait-until (predicate &optional timeout)
+  "Pump process output until PREDICATE returns non-nil.
+Give up after TIMEOUT seconds (default 15).  Return PREDICATE's
+last value."
+  (let ((deadline (+ (float-time) (or timeout 15))))
     (while (and (not (funcall predicate))
                 (< (float-time) deadline))
-      (accept-process-output (neat-connection-process conn) 0.1))))
+      (accept-process-output nil 0.1))
+    (funcall predicate)))
+
+(defun neat-it--text ()
+  "Return the current buffer's text without properties."
+  (buffer-substring-no-properties (point-min) (point-max)))
+
+(defun neat-it--type (code)
+  "Type CODE at the REPL prompt and submit it."
+  (goto-char (point-max))
+  (insert code)
+  (neat-repl-return))
+
+(defun neat-it--send (code)
+  "Submit CODE at the REPL prompt and wait for the next prompt."
+  (neat-it--type code)
+  (neat-it--wait-until (lambda () neat-repl--prompt-start)))
 
 
-;;;; Suite registration
+;;;; Suite
 
-(when (getenv "NEAT_INTEGRATION")
-  (dolist (impl neat-it--server-impls)
-    (when (executable-find (plist-get impl :executable))
-      ;; Fresh per-iteration binding so the lambdas inside the
-      ;; describe block close over THIS impl, not the dolist's
-      ;; shared slot.
-      (let ((impl impl))
-        (describe (format "integration against %s nREPL"
-                          (plist-get impl :name))
-          :var (conn responses)
+(when (and (getenv "NEAT_INTEGRATION")
+           (executable-find (car neat-it--command)))
+  (describe "neat against nREPL"
+    :var (conn repl)
 
-          (before-all
-            (neat-it--start-server impl))
+    (before-all
+      (neat-it--start-server))
 
-          (after-all
-            (neat-it--stop-server))
+    (after-all
+      (neat-it--stop-server))
 
-          (before-each
-            (setq responses nil)
-            (setq conn (neat-connect "127.0.0.1" neat-it--server-port)))
+    (before-each
+      (let ((neat-repl-history-file nil))
+        (setq conn (neat "127.0.0.1" neat-it--server-port)))
+      (setq repl (neat-repl-buffer-for conn))
+      (neat-it--wait-until
+       (lambda ()
+         (and (neat-connection-session conn)
+              (neat-connection-capabilities conn)
+              (buffer-local-value 'neat-repl--prompt-start repl)))))
 
-          (after-each
-            (when conn
-              (ignore-errors (neat-disconnect conn))
-              (setq conn nil)))
+    (after-each
+      (when (buffer-live-p repl)
+        (kill-buffer repl))
+      (when (neat-connection-live-p conn)
+        (neat-disconnect conn))
+      (setq neat-default-connection nil
+            conn nil
+            repl nil))
 
-          (it "describes the server's capabilities"
-            (let (done)
-              (neat-describe
-               conn
-               (lambda (r)
-                 (push r responses)
-                 (when (member "done" (neat-bencode-get r "status"))
-                   (setq done t))))
-              (neat-it--wait-until conn (lambda () done) 15)
-              (expect done :to-be-truthy)
-              (expect (or (neat-bencode-get
-                           (neat-connection-capabilities conn) "versions")
-                          (neat-bencode-get
-                           (neat-connection-capabilities conn) "ops"))
-                      :not :to-be nil)))
+    (it "renders a value and a prompt in the REPL's namespace"
+      (with-current-buffer repl
+        (neat-it--send "(+ 1 2)")
+        (expect (neat-it--text) :to-match "\n3\nuser> \\'")))
 
-          (it "clones a session and evaluates an expression"
-            (neat-clone-session conn)
-            (neat-it--wait-until
-             conn (lambda () (neat-connection-session conn)) 15)
-            (expect (neat-connection-session conn) :not :to-be nil)
+    (it "renders stdout ahead of the value"
+      (with-current-buffer repl
+        (neat-it--send "(do (println \"hi\") :ok)")
+        (expect (neat-it--text) :to-match "\nhi\n:ok\nuser> \\'")))
 
-            (let ((id (neat-eval
-                       conn "(+ 1 2)"
-                       :callback (lambda (r) (push r responses)))))
-              (neat-it--wait-until
-               conn (lambda ()
-                      (not (gethash id (neat-connection-pending conn))))
-               15)
-              (let ((value-resp (cl-find-if (lambda (r)
-                                              (neat-bencode-get r "value"))
-                                            responses)))
-                (expect value-resp :not :to-be nil)
-                (expect (neat-bencode-get value-resp "value")
-                        :to-equal "3"))))
+    (it "follows in-ns in the prompt and in tooling ops"
+      (with-current-buffer repl
+        (neat-it--send "(in-ns 'neat.it)")
+        (expect (neat-it--text) :to-match "neat\\.it> \\'")
+        (expect (neat-connection-ns conn) :to-equal "neat.it")))
 
-          (it "captures stdout from the evaluated code"
-            (neat-clone-session conn)
-            (neat-it--wait-until
-             conn (lambda () (neat-connection-session conn)) 15)
+    (it "answers need-input from the minibuffer"
+      (spy-on 'read-from-minibuffer :and-return-value "hello")
+      (with-current-buffer repl
+        (neat-it--send "(read-line)")
+        (expect 'read-from-minibuffer :to-have-been-called)
+        (expect (neat-it--text) :to-match "\n\"hello\"\nuser> \\'")))
 
-            (let ((id (neat-eval
-                       conn "(do (println \"hi\") :ok)"
-                       :callback (lambda (r) (push r responses)))))
-              (neat-it--wait-until
-               conn (lambda ()
-                      (not (gethash id (neat-connection-pending conn))))
-               15)
-              ;; Different implementations chunk `out' differently:
-              ;; Clojure batches "hi\\n", Basilisp splits it into "hi"
-              ;; and "\\n" messages.  Concatenate everything we got.
-              (let ((all-out (mapconcat
-                              (lambda (r) (or (neat-bencode-get r "out") ""))
-                              (reverse responses)
-                              ""))
-                    (val-resp (cl-find-if
-                               (lambda (r) (neat-bencode-get r "value"))
-                               responses)))
-                (expect all-out :to-match "hi")
-                (expect val-resp :not :to-be nil)
-                (expect (neat-bencode-get val-resp "value")
-                        :to-equal ":ok")))))))))
+    (it "sends end-of-file from the stdin prompt"
+      (spy-on 'read-from-minibuffer
+              :and-call-fake (lambda (&rest _)
+                               (setq neat-repl--stdin-eof t)
+                               ""))
+      (with-current-buffer repl
+        (neat-it--send "(read-line)")
+        (expect (neat-it--text) :to-match "\nnil\nuser> \\'")))
+
+    (it "interrupts a running eval"
+      (with-current-buffer repl
+        (neat-it--type "(Thread/sleep 60000)")
+        ;; Give the eval a moment to actually start running.
+        (neat-it--wait-until #'ignore 1)
+        (expect (neat-eval-pending-p conn) :to-be-truthy)
+        (neat-repl-interrupt)
+        (expect (neat-it--wait-until (lambda () neat-repl--prompt-start))
+                :to-be-truthy)
+        (expect (neat-eval-pending-p conn) :to-be nil)))
+
+    (it "reports a namespace that doesn't exist"
+      (with-temp-buffer
+        (setq neat-ns "neat.no-such-ns")
+        (insert "(+ 1 2)")
+        (neat-eval-buffer))
+      (with-current-buffer repl
+        (expect (neat-it--wait-until
+                 (lambda ()
+                   (string-match-p ";; namespace not found: neat\\.no-such-ns"
+                                   (neat-it--text))))
+                :to-be-truthy)))
+
+    (it "reports an unknown session and clones a new one"
+      (spy-on 'y-or-n-p :and-return-value t)
+      (setf (neat-connection-session conn) "neat-no-such-session")
+      (with-current-buffer repl
+        (neat-it--send "(+ 1 2)")
+        (expect (neat-it--text) :to-match ";; unknown session\n")
+        (expect (neat-it--wait-until (lambda () (neat-connection-session conn)))
+                :to-be-truthy)
+        (neat-it--send "(+ 40 2)")
+        (expect (neat-it--text) :to-match "\n42\nuser> \\'")))
+
+    (it "shows output that arrives after the eval is done"
+      (with-current-buffer repl
+        (neat-it--send "(do (future (Thread/sleep 300) (println \"late\")) :ok)")
+        (expect (neat-it--wait-until
+                 (lambda () (string-match-p "^late$" (neat-it--text))))
+                :to-be-truthy)
+        ;; Above the prompt, not tacked on after it.
+        (expect (neat-it--text) :to-match "\n:ok\nlate\nuser> \\'")))))
 
 ;;; neat-integration-test.el ends here

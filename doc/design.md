@@ -178,19 +178,16 @@ Supporting Emacs 27 would mean fallbacks for each of those and worse
 UX where the modern API does the right thing. Not worth it for a
 young project.
 
-## Integration testing as a compatibility tool
+## Integration tests
 
-The parameterised suite at `test/neat-integration-test.el` runs the
-same assertions against every nREPL implementation whose executable
-is on PATH. Today: Clojure (`nrepl/nrepl`), Babashka, Basilisp.
+The suite at `test/neat-integration-test.el` runs neat end to end
+against the reference nREPL server. It types into a real REPL buffer
+and checks what comes back, which covers the parts unit tests can
+only fake: the stdin round trip, interrupts, error statuses and
+output that arrives after `done`.
 
-This isn't just nice-to-have; it's a first step toward a real nREPL
-compatibility test suite. The contract under test is what we believe
-any conformant server should support, and concrete divergences (for
-example, Basilisp chunking `(println "hi")` into two `out` messages
-where Clojure batches them into `"hi\n"`) are exactly the findings
-that should feed back into the nREPL specification work.
-
-Adding a new implementation is a single plist entry in
-`neat-it--server-impls`: name, executable, command builder, and a
-regex for the port banner.
+It used to run the same checks against several servers, with the
+idea of growing into a compatibility suite for nREPL servers. That
+job has moved to [proof](https://github.com/nrepl/proof), which is
+built for it, so this suite sticks to one server and tests the
+client.
