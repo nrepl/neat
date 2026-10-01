@@ -181,12 +181,28 @@ purpose is to satisfy `comint-output-filter' and friends."
 (defun neat-repl--insert-prompt ()
   "Insert a fresh prompt at the end of the buffer.
 It starts on a line of its own, even after output that didn't end one
-or after the dead prompt of an earlier connection in a reused buffer."
+or after the dead prompt of an earlier connection in a reused buffer.
+Does nothing while a prompt is already waiting for input, so two
+requests finishing back to back don't leave two prompts behind."
   (let ((proc (get-buffer-process (current-buffer))))
-    (when proc
+    (when (and proc (not neat-repl--prompt-start))
       (unless (save-excursion (goto-char (process-mark proc)) (bolp))
         (comint-output-filter proc "\n"))
       (setq neat-repl--prompt-start (copy-marker (process-mark proc)))
+      (comint-output-filter proc (neat-repl--prompt)))))
+
+(defun neat-repl--redraw-prompt ()
+  "Bring a waiting prompt up to date with `neat-repl--current-ns'.
+A source-buffer eval can move the session to another namespace while
+the prompt sits there showing the old one.  Anything typed after the
+prompt stays as it is."
+  (let ((proc (get-buffer-process (current-buffer))))
+    (when (and proc neat-repl--prompt-start
+               (marker-position neat-repl--prompt-start))
+      (let ((inhibit-read-only t))
+        (save-restriction
+          (widen)
+          (delete-region neat-repl--prompt-start (process-mark proc))))
       (comint-output-filter proc (neat-repl--prompt)))))
 
 (defun neat-repl--emit-output (text face)
@@ -320,7 +336,7 @@ Otherwise insert a newline so the user can keep typing the form."
      ((string-empty-p trimmed)
       (neat-repl--insert-prompt))
      (t
-      (let ((request (neat-repl--request-create)))
+      (let ((request (neat-repl--request-create :from-repl t)))
         (neat-eval
          conn trimmed
          :callback (lambda (resp)
@@ -347,6 +363,9 @@ on the same dead connection are no-ops."
 (cl-defstruct (neat-repl--request (:constructor neat-repl--request-create)
                                   (:copier nil))
   "Rendering state for one request whose responses land in a REPL buffer.
+FROM-REPL is non-nil when the request is input typed into the REPL;
+only those get a fresh prompt at `done'.
+
 NS is the namespace the request named explicitly, if any.  The prompt
 follows the `ns' a reply reports only when NS is nil.  A request that
 names its own `ns' gets it bound for that one eval and then dropped,
@@ -360,7 +379,7 @@ holds the last `ex' it reported, held back until `done' and dropped
 if `err' had something to say: Basilisp and jank put the whole
 traceback in both fields, and nREPL's `ex' is only the exception
 class, so `err' is the better of the two whenever there is one."
-  ns saw-err ex)
+  from-repl ns saw-err ex)
 
 (defun neat-repl--request-update (request resp)
   "Note RESP's `err' and `ex' on REQUEST and return what's due now.
@@ -383,7 +402,11 @@ when nothing came on `err'.  PROBLEM is the error status line from
   "Insert the user-visible parts of nREPL response RESP into the buffer.
 REQUEST is the `neat-repl--request' RESP answers; pass the same one
 for every response to a request.  Without it RESP is rendered on its
-own, and an `ex' only shows up if `done' comes in the same message."
+own, and an `ex' only shows up if `done' comes in the same message.
+
+Output goes above the prompt when one is waiting for input, which is
+where results of source-buffer evals land; only input typed into the
+REPL gets a fresh prompt at `done'."
   (let* ((request (or request (neat-repl--request-create)))
          (proc (get-buffer-process (current-buffer)))
          (value (neat-bencode-get resp "value"))
@@ -397,32 +420,30 @@ own, and an `ex' only shows up if `done' comes in the same message."
     ;; `namespace-not-found' reply names the namespace that isn't there.
     (when (and ns (not (neat-repl--request-ns request))
                (not (member "namespace-not-found" status)))
-      (setq neat-repl--current-ns ns)
+      (unless (equal ns neat-repl--current-ns)
+        (setq neat-repl--current-ns ns)
+        (neat-repl--redraw-prompt))
       (when neat-current-connection
         (setf (neat-connection-ns neat-current-connection) ns)))
     (when proc
       (when out
-        (comint-output-filter
-         proc (propertize out 'face 'neat-repl-output)))
+        (neat-repl--emit-output out 'neat-repl-output))
       (when err
-        (comint-output-filter
-         proc (propertize err 'face 'neat-repl-error)))
+        (neat-repl--emit-output err 'neat-repl-error))
       (when value
-        (comint-output-filter
-         proc (concat (propertize value 'face 'neat-repl-value) "\n")))
+        (neat-repl--emit-output (concat value "\n") 'neat-repl-value))
       (when (car due)
-        (comint-output-filter
-         proc (propertize (format "%s\n" (car due)) 'face 'neat-repl-error)))
+        (neat-repl--emit-output (format "%s\n" (car due)) 'neat-repl-error))
       (when (cdr due)
-        (comint-output-filter
-         proc (propertize (format ";; %s\n" (cdr due)) 'face 'neat-repl-error)))
+        (neat-repl--emit-output (format ";; %s\n" (cdr due)) 'neat-repl-error))
       (when neat-current-connection
         (neat-repl--answer-status neat-current-connection resp))
       ;; A dead connection gets its own marker from
       ;; `neat-repl--handle-disconnect'; a prompt would only invite
       ;; input that has nowhere to go.
       (when (and (member "done" status)
-                 (not (member "connection-closed" status)))
+                 (not (member "connection-closed" status))
+                 (neat-repl--request-from-repl request))
         (neat-repl--insert-prompt)))))
 
 (defun neat-repl--answer-status (conn resp)
@@ -559,6 +580,7 @@ underlying connection."
   (interactive)
   (let ((inhibit-read-only t))
     (erase-buffer)
+    (setq neat-repl--prompt-start nil)
     (neat-repl--insert-prompt)))
 
 (defun neat-repl--close-connection (conn &optional no-wait)
