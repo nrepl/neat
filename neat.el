@@ -261,7 +261,7 @@ explicitly via `neat-set-ns', in a major-mode hook, or via
 The default returns `neat-ns'.  Replace with a parser that reads the
 buffer for languages where the namespace is declared in source (for
 example, a `(ns foo.bar)' form in Clojure).  Whatever is returned
-becomes the `ns' field on the `eval' op.")
+becomes the `ns' field on the `eval', `completions' and `lookup' ops.")
 
 (defun neat-set-ns (ns)
   "Set the buffer-local namespace `neat-ns' to NS for subsequent evaluations.
@@ -271,6 +271,16 @@ Empty input clears the override."
                       nil nil neat-ns)))
   (setq neat-ns (if (string-empty-p ns) nil ns))
   (message "Neat: ns is %s" (or neat-ns "(unset)")))
+
+(defun neat--tooling-ns (conn)
+  "Return the ns to send with `completions' and `lookup' on CONN, or nil.
+That's whatever `neat-buffer-ns-function' says, falling back to the
+namespace CONN's REPL last reported.  Some servers won't answer
+either op without an ns, while others may not take one they haven't
+loaded yet, so a request whose ns gets turned down is sent again
+without it."
+  (or (funcall neat-buffer-ns-function)
+      (neat-connection-ns conn)))
 
 (defun neat--require-connection ()
   "Return the active connection, or signal a user-error."
@@ -447,7 +457,8 @@ point or the server doesn't know about the symbol."
   (let* ((conn (neat--require-connection))
          (sym (or (thing-at-point 'symbol t)
                   (user-error "Neat: no symbol at point")))
-         (info (neat-lookup-sync conn sym nil neat-lookup-timeout)))
+         (info (neat-lookup-sync conn sym (neat--tooling-ns conn)
+                                 neat-lookup-timeout)))
     (unless info
       (user-error "Neat: no doc for `%s'" sym))
     (neat--render-doc info)))
@@ -482,7 +493,7 @@ surfaced via `:annotation-function' in the completion UI."
           (let ((cands (delq nil
                              (mapcar #'neat--candidate-with-type
                                      (neat-completions-sync
-                                      conn prefix nil
+                                      conn prefix (neat--tooling-ns conn)
                                       neat-completion-timeout)))))
             (when cands
               (list start end cands
@@ -620,21 +631,25 @@ override for servers that report arglists in a different syntax.")
   "Eldoc backend driven by the `lookup' op.
 
 Conforms to `eldoc-documentation-functions': fires the supplied
-CALLBACK with the docstring once the server responds, so the UI
-never blocks waiting on a lookup.  When the user has moved point
-by the time the response arrives, eldoc may briefly show stale
-output -- acceptable trade-off for not blocking the editor."
+CALLBACK with the docstring once the server responds, or with nil
+when there's none, so the UI never blocks waiting on a lookup.  When
+the user has moved point by the time the response arrives, eldoc may
+briefly show stale output, an acceptable trade-off for not blocking
+the editor."
   (let ((conn (neat-active-connection))
         (sym (neat--eldoc-thing-at-point))
         (arg-index (funcall neat-eldoc-arg-index-function)))
     (when (and conn sym (neat-connection-live-p conn))
-      (neat-lookup
-       conn sym nil
-       (lambda (resp)
-         (when-let* ((info (neat-bencode-get resp "info"))
-                     (str (funcall neat-eldoc-arglist-formatter
-                                   info arg-index)))
-           (funcall callback str :thing sym))))
+      (neat-lookup-async
+       conn sym (neat--tooling-ns conn)
+       (lambda (info)
+         (let ((str (and info (funcall neat-eldoc-arglist-formatter
+                                       info arg-index))))
+           ;; A nil tells eldoc there's nothing to wait for, so other
+           ;; backends' docs can go up.
+           (if str
+               (funcall callback str :thing sym)
+             (funcall callback nil)))))
       ;; Tell eldoc we'll call the callback asynchronously.
       t)))
 
@@ -692,7 +707,8 @@ in the current buffer, otherwise nil so the next backend gets a turn."
 (cl-defmethod xref-backend-definitions ((_backend (eql neat)) identifier)
   "Resolve IDENTIFIER to its definition via the `lookup' op."
   (when-let* ((conn (neat-active-connection))
-              (info (neat-lookup-sync conn identifier nil
+              (info (neat-lookup-sync conn identifier
+                                      (neat--tooling-ns conn)
                                       neat-lookup-timeout))
               (location (neat--xref-location-from-info info)))
     (list (xref-make identifier location))))

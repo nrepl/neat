@@ -112,26 +112,35 @@ inserts text."
                               ("value" . "nil")))
           (expect neat-repl--current-ns :to-equal "myapp.core")))))
 
+  (it "remembers the REPL's ns on the connection for tooling ops"
+    (neat-repl-test--with-repl conn
+      (neat-repl--render-response
+       '(("id" . "1") ("ns" . "myapp.core") ("value" . "nil"))
+       (neat-repl--request-create))
+      (expect (neat-connection-ns conn) :to-equal "myapp.core")))
+
   (it "ignores the `ns' of an eval that named its own"
     ;; The source buffer sent an explicit ns, which the server only
     ;; binds for that eval; the REPL is still wherever it was.
-    (neat-repl-test--with-repl _conn
+    (neat-repl-test--with-repl conn
       (setq neat-repl--current-ns "user")
       (let ((request (neat-repl--request-create :ns "myapp.core")))
         (dolist (resp '((("id" . "1") ("ns" . "myapp.core") ("value" . "nil"))
                         (("id" . "1") ("status" "done"))))
           (neat-repl--render-response resp request)))
       (expect neat-repl--current-ns :to-equal "user")
+      (expect (neat-connection-ns conn) :to-be nil)
       (expect (neat-repl-test--text) :to-equal "nil\nuser> ")))
 
   (it "follows a source-buffer eval that named no ns"
     ;; Say it ran `(ns myapp.core)': the session really moved.
-    (neat-repl-test--with-repl _conn
+    (neat-repl-test--with-repl conn
       (setq neat-repl--current-ns "user")
       (neat-repl-test--render-all
        '((("id" . "1") ("ns" . "myapp.core") ("value" . "nil"))
          (("id" . "1") ("status" "done"))))
-      (expect neat-repl--current-ns :to-equal "myapp.core"))))
+      (expect neat-repl--current-ns :to-equal "myapp.core")
+      (expect (neat-connection-ns conn) :to-equal "myapp.core"))))
 
 (defun neat-repl-test--render-all (responses)
   "Render RESPONSES in order as replies to one request."

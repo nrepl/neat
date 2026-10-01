@@ -378,7 +378,9 @@ own, and an `ex' only shows up if `done' comes in the same message."
     ;; Track the namespace as soon as we see one so the next prompt
     ;; reflects any `(in-ns ...)' or namespace-switching form.
     (when (and ns (not (neat-repl--request-ns request)))
-      (setq neat-repl--current-ns ns))
+      (setq neat-repl--current-ns ns)
+      (when neat-current-connection
+        (setf (neat-connection-ns neat-current-connection) ns)))
     (when ex
       (setf (neat-repl--request-ex request) ex))
     (when proc
