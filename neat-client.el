@@ -733,19 +733,26 @@ A server can send any bencode value, so MESSAGE gets checked first:
 anything other than a dict is logged and skipped, a `status' sent as
 a plain string counts as a list of one, and any other `status' that
 isn't a list is dropped as if it weren't there.  Either would
-otherwise blow up in here or in the callback.  A message without a
-callback goes to `neat-unhandled-message-functions'.  When the
+otherwise blow up in here or in the callback.  An `unknown-session'
+reply gets a `done' added if it lacks one, since nothing more can
+come for a request the server has no session for.  A message without
+a callback goes to `neat-unhandled-message-functions'.  When the
 response's status contains `done' the callback entry is pruned
 afterwards."
   (neat-client--log conn :in message)
   (if (not (neat-bencode-dict-p message))
       (neat-client--log conn :note '(skipped "not a dict"))
     (let ((status (neat-bencode-get message "status")))
+      (when (stringp status)
+        (setq status (list status))
+        (setf (alist-get "status" message nil nil #'equal) status))
       (cond
-       ((stringp status)
-        (setf (alist-get "status" message nil nil #'equal) (list status)))
        ((not (listp status))
-        (setq message (cl-remove "status" message :key #'car :test #'equal)))))
+        (setq message (cl-remove "status" message :key #'car :test #'equal)))
+       ((and (member "unknown-session" status)
+             (not (member "done" status)))
+        (setf (alist-get "status" message nil nil #'equal)
+              (append status '("done"))))))
     (let* ((id (neat-bencode-get message "id"))
            (status (neat-bencode-get message "status"))
            (callback (and id (gethash id (neat-connection-pending conn)))))
