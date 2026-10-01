@@ -180,6 +180,14 @@
     (expect (neat-bencode-get '(("foo" . 1)) "missing" 'fallback)
             :to-equal 'fallback)))
 
+(describe "neat-bencode-dict-p"
+  (it "accepts alists with string or symbol keys"
+    (expect (neat-bencode-dict-p '(("id" . "1") (op . "eval"))) :to-be-truthy))
+
+  (it "rejects lists, the empty list and non-lists"
+    (dolist (obj '(("a" "b") nil 42 "id"))
+      (expect (neat-bencode-dict-p obj) :to-be nil))))
+
 (describe "neat-bencode-keys"
   (it "returns the keys in wire order"
     (expect (neat-bencode-keys '(("bar" . 2) ("foo" . 1)))
