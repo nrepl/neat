@@ -234,8 +234,10 @@ with `neat-mode' enabled will use it automatically."
     (neat-clone-session
      conn
      (lambda (resp)
-       (when (member "done" (neat-bencode-get resp "status"))
-         (when (buffer-live-p buffer)
+       (let ((status (neat-bencode-get resp "status")))
+         (when (and (member "done" status)
+                    (not (member "connection-closed" status))
+                    (buffer-live-p buffer))
            (with-current-buffer buffer
              (neat-repl--insert-prompt))))))
     (pop-to-buffer buffer)
@@ -284,7 +286,9 @@ Empty input clears the override."
       (let ((value (neat-bencode-get resp "value"))
             (err (neat-bencode-get resp "err")))
         (cond (err (message "neat: %s" (string-trim err)))
-              (value (message "=> %s" value)))))))
+              (value (message "=> %s" value))
+              ((member "connection-closed" (neat-bencode-get resp "status"))
+               (message "neat: connection closed")))))))
 
 (defun neat--eval-string (code &optional pos)
   "Evaluate CODE on the active connection.
