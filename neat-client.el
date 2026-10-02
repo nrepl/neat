@@ -86,10 +86,14 @@ Slots:
   NS           - the namespace the REPL last reported, if any
   CAPABILITIES - parsed response from a `describe' op
   PENDING      - hash table mapping request id -> callback function
+  EVALS        - ids of `eval' and `load-file' requests awaiting `done'
+  STALLED      - when a tooling request last timed out behind an eval
+                 (a `float-time'), or nil; see `neat-tooling-stalled-p'
   NEXT-ID      - integer counter used to mint fresh request ids
   RECV-BUFFER  - accumulated, undecoded bytes from the wire"
   process host port session ns capabilities
   (pending (make-hash-table :test 'equal))
+  evals stalled
   (next-id 0)
   (recv-buffer (unibyte-string)))
 
@@ -375,7 +379,7 @@ PLIST is a property list of optional fields:
                 ,@(when file `((file . ,file)))
                 ,@(when line `((line . ,line)))
                 ,@(when column `((column . ,column))))))
-    (neat-send conn msg callback)))
+    (neat-client--track-eval conn (neat-send conn msg callback))))
 
 (defun neat-load-file (conn file-contents &rest plist)
   "Send a `load-file' op on CONN carrying FILE-CONTENTS.
@@ -397,7 +401,55 @@ to errors and other diagnostics."
                 ,@(when file-path `((file-path . ,file-path)))
                 ,@(when file-name `((file-name . ,file-name)))
                 ,@(when session `((session . ,session))))))
-    (neat-send conn msg callback)))
+    (neat-client--track-eval conn (neat-send conn msg callback))))
+
+(defun neat-client--track-eval (conn id)
+  "Note request ID as an eval in flight on CONN and return ID."
+  (push id (neat-connection-evals conn))
+  id)
+
+(defun neat-eval-pending-p (conn)
+  "Return non-nil while an `eval' or `load-file' on CONN awaits `done'."
+  (and (neat-connection-evals conn) t))
+
+(defcustom neat-tooling-probe-interval 5
+  "Seconds between probes of a connection whose tooling requests stall.
+See `neat-tooling-stalled-p'."
+  :type 'number
+  :group 'neat)
+
+(defun neat-tooling-stalled-p (conn)
+  "Return non-nil if tooling requests on CONN should hold off for now.
+Some servers (Babashka among them) work through one request at a time
+per connection, so anything sent behind a running eval waits for it
+to finish.  There's no telling from `describe', so this goes by what
+happened: a tooling request that timed out while an eval was in
+flight marks CONN, and the mark goes once no evals are left or a
+tooling request does get answered mid-eval.  Servers that answer
+tooling ops while an eval runs, nREPL included, never get marked.
+
+So the mark can go while the eval keeps running, or when its `done'
+never comes, the answer is nil once every
+`neat-tooling-probe-interval' seconds: that lets one request through
+to see whether the server answers now.  Ask right before sending."
+  (let ((since (neat-connection-stalled conn)))
+    (cond
+     ((not since) nil)
+     ((not (neat-eval-pending-p conn))
+      (setf (neat-connection-stalled conn) nil)
+      nil)
+     ((< (- (float-time) since) neat-tooling-probe-interval) t)
+     (t
+      (setf (neat-connection-stalled conn) (float-time))
+      nil))))
+
+(defun neat-client--note-tooling (conn answered)
+  "Update CONN's stall mark after a tooling request.
+ANSWERED nil means the request timed out, which only counts while an
+eval is in flight; see `neat-tooling-stalled-p'."
+  (cond (answered (setf (neat-connection-stalled conn) nil))
+        ((neat-eval-pending-p conn)
+         (setf (neat-connection-stalled conn) (float-time)))))
 
 (defun neat-stdin (conn input &rest plist)
   "Send a `stdin' op on CONN delivering INPUT to a paused eval.
@@ -488,8 +540,38 @@ the pending table."
                   (< (float-time) deadline))
         (accept-process-output (neat-connection-process conn) 0.05))
       (unless done
-        (remhash id (neat-connection-pending conn))))
+        (remhash id (neat-connection-pending conn)))
+      (neat-client--note-tooling conn done))
     (nreverse responses)))
+
+(defun neat-client--request-async (conn timeout send callback)
+  "Send a request with SEND and call CALLBACK with CONN's responses.
+SEND is as for `neat-client--request-sync'.  CALLBACK gets the
+responses in the order they came once `done' arrives, or whatever
+came before TIMEOUT seconds ran out.  Either way it counts toward
+`neat-tooling-stalled-p', and a timeout unregisters the request, so
+a late reply goes nowhere."
+  (let (responses finished timer id)
+    (setq id (funcall
+              send
+              (lambda (resp)
+                (push resp responses)
+                (when (and (not finished)
+                           (member "done" (neat-bencode-get resp "status")))
+                  (setq finished t)
+                  (when timer (cancel-timer timer))
+                  (neat-client--note-tooling conn t)
+                  (funcall callback (nreverse responses))))))
+    (unless finished
+      (setq timer (run-at-time
+                   timeout nil
+                   (lambda ()
+                     (unless finished
+                       (setq finished t)
+                       (remhash id (neat-connection-pending conn))
+                       (neat-client--note-tooling conn nil)
+                       (funcall callback (nreverse responses)))))))
+    id))
 
 (defun neat-client--ns-rejected-p (responses)
   "Return non-nil if RESPONSES look like the server turned down their ns.
@@ -540,22 +622,22 @@ a bare `error'), the request goes out again without it."
         (neat-lookup-sync conn sym nil timeout)
       info)))
 
-(defun neat-lookup-async (conn sym ns callback)
+(defun neat-lookup-async (conn sym ns timeout callback)
   "Look SYM up on CONN (in NS) and call CALLBACK with the `info' dict.
-CALLBACK gets nil when the server has none.  Like `neat-lookup-sync',
-this asks again without NS when the server turns NS down."
-  (let (responses)
-    (neat-lookup
-     conn sym ns
-     (lambda (resp)
-       (push resp responses)
-       (when (member "done" (neat-bencode-get resp "status"))
-         (let* ((all (nreverse responses))
-                (info (cl-some (lambda (r) (neat-bencode-get r "info")) all)))
-           (if (and ns (not info) (neat-client--ns-rejected-p all)
-                    (neat-connection-live-p conn))
-               (neat-lookup-async conn sym nil callback)
-             (funcall callback info))))))))
+CALLBACK gets nil when the server has none or doesn't answer within
+TIMEOUT seconds; a timeout counts toward `neat-tooling-stalled-p'.
+Like `neat-lookup-sync', this asks again without NS when the server
+turns NS down."
+  (neat-client--request-async
+   conn timeout
+   (lambda (cb) (neat-lookup conn sym ns cb))
+   (lambda (responses)
+     (let ((info (cl-some (lambda (r) (neat-bencode-get r "info"))
+                          responses)))
+       (if (and ns (not info) (neat-client--ns-rejected-p responses)
+                (neat-connection-live-p conn))
+           (neat-lookup-async conn sym nil timeout callback)
+         (funcall callback info))))))
 
 
 ;;;; Process filter / sentinel
@@ -635,7 +717,11 @@ afterwards."
           (run-hook-with-args 'neat-unhandled-message-functions
                               conn message)))
       (when (and id (member "done" status))
-        (remhash id (neat-connection-pending conn))))))
+        (remhash id (neat-connection-pending conn))
+        (setf (neat-connection-evals conn)
+              (delete id (neat-connection-evals conn)))
+        (unless (neat-connection-evals conn)
+          (setf (neat-connection-stalled conn) nil))))))
 
 (defun neat-client--sentinel (proc _event)
   "Sentinel for nREPL connection PROC.  Delegates to `neat-client--cleanup'."
@@ -678,7 +764,9 @@ whether) to tell the user."
                       ("status" . ("done" "connection-closed"))))
          (error nil)))
      pending)
-    (clrhash pending)))
+    (clrhash pending)
+    (setf (neat-connection-evals conn) nil
+          (neat-connection-stalled conn) nil)))
 
 (provide 'neat-client)
 ;;; neat-client.el ends here

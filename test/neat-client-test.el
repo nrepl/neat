@@ -355,7 +355,8 @@ returned function goes in place of `process-send-string'."
                              '((("status" "done" "error" "namespace-not-found")))
                            '((("info" . (("name" . "map")))
                               ("status" "done"))))))))
-        (neat-lookup-async conn "map" "not.loaded" (lambda (i) (setq got i))))
+        (neat-lookup-async conn "map" "not.loaded" 1
+                           (lambda (i) (setq got i))))
       (expect got :to-equal '(("name" . "map")))
       (expect (nreverse sent-ns) :to-equal '("not.loaded" nil))))
 
@@ -525,6 +526,121 @@ returned function goes in place of `process-send-string'."
           (expect (assoc "line" decoded) :to-be nil)
           (expect (assoc "column" decoded) :to-be nil)
           (expect (assoc "ns" decoded) :to-be nil))))))
+
+(describe "neat-eval-pending-p"
+  :var (conn)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1)))
+
+  (it "is true from an eval until its done"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string) #'ignore))
+      (expect (neat-eval-pending-p conn) :to-be nil)
+      (neat-eval conn "(+ 1 2)")
+      (expect (neat-eval-pending-p conn) :to-be-truthy)
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1") ("value" . "3"))))
+      (expect (neat-eval-pending-p conn) :to-be-truthy)
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1") ("status" "done"))))
+      (expect (neat-eval-pending-p conn) :to-be nil)))
+
+  (it "counts load-file but not tooling ops"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string) #'ignore))
+      (neat-completions conn "ma")
+      (neat-lookup conn "map")
+      (expect (neat-eval-pending-p conn) :to-be nil)
+      (neat-load-file conn "(def x 1)")
+      (expect (neat-eval-pending-p conn) :to-be-truthy)))
+
+  (it "clears when the connection goes away"
+    (let ((neat-connections (list conn))
+          (neat-disconnect-functions nil))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore))
+        (neat-eval conn "(Thread/sleep 10000)" :callback #'ignore))
+      (neat-disconnect conn)
+      (expect (neat-eval-pending-p conn) :to-be nil))))
+
+(describe "neat-tooling-stalled-p"
+  :var (conn)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1)))
+
+  (it "turns on when a sync request times out behind an eval"
+    (setf (neat-connection-evals conn) '("5"))
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string) #'ignore)
+              ((symbol-function 'accept-process-output) #'ignore))
+      (neat-completions-sync conn "ma" nil 0.05))
+    (expect (neat-tooling-stalled-p conn) :to-be-truthy))
+
+  (it "stays off when the timeout had no eval to blame"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string) #'ignore)
+              ((symbol-function 'accept-process-output) #'ignore))
+      (neat-completions-sync conn "ma" nil 0.05))
+    (expect (neat-connection-stalled conn) :to-be nil))
+
+  (it "turns off once the evals are done"
+    (setf (neat-connection-evals conn) '("5")
+          (neat-connection-stalled conn) (float-time))
+    (neat-client-test--push-bytes
+     conn (neat-bencode-encode '(("id" . "5") ("status" "done"))))
+    (expect (neat-tooling-stalled-p conn) :to-be nil))
+
+  (it "turns off when a sync request gets answered mid-eval"
+    (setf (neat-connection-evals conn) '("5")
+          (neat-connection-stalled conn) (float-time))
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (_req) '((("info" . (("name" . "map")))
+                                      ("status" "done")))))))
+      (neat-lookup-sync conn "map"))
+    (expect (neat-tooling-stalled-p conn) :to-be nil))
+
+  (it "lets one request through as a probe every so often"
+    (let ((neat-tooling-probe-interval 5))
+      (setf (neat-connection-evals conn) '("5")
+            (neat-connection-stalled conn) (- (float-time) 10))
+      (expect (neat-tooling-stalled-p conn) :to-be nil)
+      ;; The probe restarted the clock, so the next one has to wait.
+      (expect (neat-tooling-stalled-p conn) :to-be-truthy)))
+
+  (it "turns on when an async lookup times out behind an eval"
+    (let (got (called nil))
+      (setf (neat-connection-evals conn) '("5"))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore))
+        (neat-lookup-async conn "map" nil 0.01
+                           (lambda (info) (setq called t got info)))
+        (sleep-for 0.1))
+      (expect called :to-be-truthy)
+      (expect got :to-be nil)
+      (expect (hash-table-count (neat-connection-pending conn)) :to-equal 0)
+      (expect (neat-tooling-stalled-p conn) :to-be-truthy)))
+
+  (it "turns off when an async lookup is answered mid-eval"
+    (setf (neat-connection-evals conn) '("5")
+          (neat-connection-stalled conn) (float-time))
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (_req) '((("info" . (("name" . "map")))
+                                      ("status" "done")))))))
+      (neat-lookup-async conn "map" nil 1 #'ignore))
+    (expect (neat-tooling-stalled-p conn) :to-be nil))
+
+  (it "turns off when the connection goes away"
+    (let ((neat-connections (list conn))
+          (neat-disconnect-functions nil))
+      (setf (neat-connection-evals conn) '("5")
+            (neat-connection-stalled conn) (float-time))
+      (neat-disconnect conn)
+      (expect (neat-connection-stalled conn) :to-be nil))))
 
 (describe "neat-load-file"
   (it "builds a load-file op with contents and metadata"
