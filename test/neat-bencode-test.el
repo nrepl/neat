@@ -36,8 +36,25 @@
       ;; "héllo" is 5 chars but 6 bytes when UTF-8 encoded
       (expect encoded :to-equal (neat-bencode-test--bytes "6:héllo"))))
 
-  (it "encodes the empty list"
-    (expect (neat-bencode-encode '()) :to-equal "le"))
+  (it "encodes an empty vector as the empty list"
+    (expect (neat-bencode-encode []) :to-equal "le"))
+
+  (it "encodes a vector as a list"
+    (expect (neat-bencode-encode [1 "spam"]) :to-equal "li1e4:spame"))
+
+  (it "encodes a vector of string-headed lists as a list, not a dict"
+    (expect (neat-bencode-encode [("a" "b") ("c" "d")])
+            :to-equal "ll1:a1:bel1:c1:dee"))
+
+  (it "rejects nil at the top level"
+    (expect (neat-bencode-encode nil) :to-throw 'neat-bencode-error))
+
+  (it "rejects a nil dict value"
+    (expect (neat-bencode-encode '((op . "eval") (ns . nil)))
+            :to-throw 'neat-bencode-error))
+
+  (it "rejects a nil list element"
+    (expect (neat-bencode-encode '(1 nil 2)) :to-throw 'neat-bencode-error))
 
   (it "encodes a list of integers"
     (expect (neat-bencode-encode '(1 2 3)) :to-equal "li1ei2ei3ee"))
@@ -141,7 +158,7 @@
   (it "preserves common nREPL-shaped messages"
     (dolist (msg '(((op . "describe"))
                    ((op . "eval") (code . "(+ 1 2)") (id . "1"))
-                   ((id . "2") (session . "abc") (status ("done")))))
+                   ((id . "2") (session . "abc") (status "done"))))
       (let* ((encoded (neat-bencode-encode msg))
              (decoded (neat-bencode-decode encoded))
              (re-encoded (neat-bencode-encode (car decoded))))
@@ -162,6 +179,14 @@
   (it "returns DEFAULT when the key is absent"
     (expect (neat-bencode-get '(("foo" . 1)) "missing" 'fallback)
             :to-equal 'fallback)))
+
+(describe "neat-bencode-dict-p"
+  (it "accepts alists with string or symbol keys"
+    (expect (neat-bencode-dict-p '(("id" . "1") (op . "eval"))) :to-be-truthy))
+
+  (it "rejects lists, the empty list and non-lists"
+    (dolist (obj '(("a" "b") nil 42 "id"))
+      (expect (neat-bencode-dict-p obj) :to-be nil))))
 
 (describe "neat-bencode-keys"
   (it "returns the keys in wire order"

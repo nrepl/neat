@@ -33,25 +33,24 @@ edges - this is the start of the road, not the end.
 ecosystem rather than a Clojure-only protocol. That effort has three
 strands:
 
-1. **An official nREPL specification.** Today the [nREPL][nrepl] project
+1. An official nREPL specification. Today the [nREPL][nrepl] project
    is the de facto spec; a formal version is being drafted at
    [nrepl/spec.nrepl.org][spec]. `neat` aims to keep pressure on the spec
    to stay genuinely language-agnostic by being a client that refuses to
    silently assume Clojure.
-2. **Reference clients.** A spec without independent client
+2. Reference clients. A spec without independent client
    implementations is wishful thinking. `neat` is one such reference
    client, intentionally built on Emacs builtins and free of
    Clojure-specific helpers, so it can act as a baseline for what
    "compliant" should mean on the client side.
-3. **A compatibility test suite.** The parameterised integration suite
-   under [`test/neat-integration-test.el`](test/neat-integration-test.el)
-   already runs the same assertions against multiple servers (Clojure,
-   Babashka, Basilisp), and divergences between them get surfaced as
-   real findings rather than mysterious bugs. The long-term goal is
-   to grow this into a portable suite any nREPL server can self-check
-   against.
+3. A compatibility test suite. That one lives in its own project,
+   [proof][proof]. It talks to a server the way clients do, runs a set
+   of checks and tells you what's broken and which clients it breaks.
+   If you work on an nREPL server, that's the tool to reach for.
+   neat's own integration suite only tests the client.
 
 [spec]: https://github.com/nrepl/spec.nrepl.org
+[proof]: https://github.com/nrepl/proof
 
 ## Installation
 
@@ -205,23 +204,28 @@ the source (Clojure's `(ns foo.bar)`, etc.), swap in a parser via
 ### Eldoc, completion, or `M-.` quietly do nothing
 
 The CAPF, eldoc backend, and xref backend all rely on the standard
-`completions` and `lookup` nREPL ops. If your server doesn't implement
-them, our sync helpers return nil and we defer silently - that's by
-design, a language-agnostic client can't assume anything.
+`completions` and `lookup` nREPL ops. neat checks the ops the server
+lists in its `describe` reply, and when one of them is missing these
+features stay out of the way - that's by design, a language-agnostic
+client can't assume anything.
 
 Diagnosis: turn on the message log (next-to-last entry below) and
-look for `unknown-op` in the status.
+look at the `ops` in the `describe` reply, or for `unknown-op` in a
+status.
 
 ### Evaluation just sits there
 
 Three usual suspects:
 
 - The eval is reading from stdin. Look at the minibuffer for a
-  `stdin:` prompt and answer it. `C-g` interrupts the read.
+  `stdin` prompt and answer it, REPL buffer or not. `C-c C-d` there
+  sends end-of-file, and `C-g` interrupts the eval (or sends
+  end-of-file, if the server can't interrupt).
 - The connection died. The mode-line shows `[closed]` and a
   `;; connection closed` line appears in the REPL buffer.
 - The eval is actually running, just slowly. `C-c C-c` in the REPL
-  (or `C-c C-k` in a source buffer) sends an `interrupt` op.
+  (or `C-c C-k` in a source buffer) sends an `interrupt` op. Not every
+  server has one, and neat tells you when yours doesn't.
 
 ### Evaluation lands in the wrong namespace
 
@@ -233,6 +237,10 @@ its current namespace is. To pin a source buffer:
   project-wide default.
 - Or swap `neat-buffer-ns-function` for one that derives the ns from
   the buffer (parsing a `(ns ...)` form, reading file metadata, etc.).
+
+A namespace the server doesn't know (a typo in `neat-ns`, say) shows
+up as a `;; namespace not found: ...` line in the REPL, or in the echo
+area when there's no REPL buffer.
 
 ### `M-x neat` doesn't autofill the port
 
@@ -309,31 +317,19 @@ eldev lint        # lint
 eldev test        # run Buttercup suites
 ```
 
-The default suite is the fast one. There's also an integration suite that
-boots real nREPL servers as subprocesses and exercises the full client.
-It's gated behind an env var since starting a server adds a few seconds:
+The default suite is the fast one. There's also an integration suite
+that starts an nREPL server (`nrepl/nrepl`, through the Clojure CLI)
+and drives the client and the REPL buffer end to end: rendering,
+stdin, interrupts, error statuses and late output. It's gated behind
+an env var since starting the JVM adds a few seconds, and it's
+skipped when `clojure` isn't on your PATH:
 
 ```
 NEAT_INTEGRATION=1 eldev test
 ```
 
-The integration suite walks `neat-it--server-impls` in
-`test/neat-integration-test.el` and registers a block per implementation
-that's installed on PATH. Currently:
-
-| Implementation | Executable | How to install |
-|----------------|------------|----------------|
-| Clojure (`nrepl/nrepl`) | `clojure` | [clojure.org/guides/install_clojure](https://clojure.org/guides/install_clojure) |
-| [Babashka](https://babashka.org) | `bb` | `brew install borkdude/brew/babashka` |
-| [Basilisp](https://basilisp.readthedocs.io) (Python) | `basilisp` | `pipx install basilisp` |
-| [let-go](https://github.com/nooga/let-go) (Go) | `let-go` | `go install github.com/nooga/let-go@latest` |
-
-Add more entries to the list to teach the suite about your favorite
-nREPL implementation. Most servers just need an executable that prints
-a port banner on stdout; for ones that can't or won't announce an
-OS-assigned port (let-go, currently), the entry can supply a
-`:port-fn` that pre-allocates a free port for the framework to pass
-in.
+The suite tests neat, not the server. To find out how well a server
+speaks nREPL, run [proof][proof] against it.
 
 ## License
 

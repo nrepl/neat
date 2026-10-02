@@ -54,6 +54,15 @@ the server going away.  Use to update buffers that reference the
 connection (the REPL buffer adds a `connection closed' marker this
 way).")
 
+(defvar neat-unhandled-message-functions nil
+  "Abnormal hook run for messages that no pending callback claims.
+Each function is called with two arguments, the `neat-connection' and
+the response dict.  That covers messages with no `id', ids that were
+never registered, and anything a server sends for a request after its
+`done' (nREPL and Babashka both keep sending `out' from a `future'
+that outlives the eval that started it).  The REPL buffer uses this
+to show such output above its prompt.")
+
 (defun neat-active-connection ()
   "Return the active connection for the current buffer, or nil.
 Prefers `neat-current-connection' when set buffer-locally and still
@@ -74,12 +83,17 @@ Slots:
   PROCESS      - the underlying network process
   HOST, PORT   - the address we connected to
   SESSION      - the nREPL session id (set by `neat-clone-session')
+  NS           - the namespace the REPL last reported, if any
   CAPABILITIES - parsed response from a `describe' op
   PENDING      - hash table mapping request id -> callback function
+  EVALS        - ids of `eval' and `load-file' requests awaiting `done'
+  STALLED      - when a tooling request last timed out behind an eval
+                 (a `float-time'), or nil; see `neat-tooling-stalled-p'
   NEXT-ID      - integer counter used to mint fresh request ids
   RECV-BUFFER  - accumulated, undecoded bytes from the wire"
-  process host port session capabilities
+  process host port session ns capabilities
   (pending (make-hash-table :test 'equal))
+  evals stalled
   (next-id 0)
   (recv-buffer (unibyte-string)))
 
@@ -115,7 +129,7 @@ double-fire."
   (let ((proc (neat-connection-process conn)))
     (if (process-live-p proc)
         (delete-process proc)
-      (neat-client--cleanup conn "disconnected"))))
+      (neat-client--cleanup conn))))
 
 (defun neat-connection-live-p (conn)
   "Return non-nil if CONN's underlying process is alive."
@@ -282,19 +296,26 @@ MESSAGE is an alist of op fields (e.g. `((op . \"eval\") (code . \"...\"))').
 A unique `id' field is added automatically.  CALLBACK, if given, is
 called with the parsed response dict for every response sharing the
 assigned id.  Callers should inspect the `status' field to detect
-completion -- `done' indicates the server is finished with this
+completion: `done' indicates the server is finished with this
 request, after which the callback is unregistered.
+
+If the connection goes away before `done' arrives, CALLBACK gets one
+last response made up by neat itself, with status
+\(\"done\" \"connection-closed\") and nothing else.  No server sends
+`connection-closed'; it only ever comes from the client.
 
 Returns the assigned id (a string)."
   (unless (neat-connection-live-p conn)
     (user-error "Neat: connection is not live"))
   (let* ((id (number-to-string (cl-incf (neat-connection-next-id conn))))
-         (with-id (cons (cons "id" id) message)))
+         (with-id (cons (cons "id" id) message))
+         ;; Encode first, so a message that can't be encoded leaves no
+         ;; callback or log entry behind.
+         (bytes (neat-bencode-encode with-id)))
     (when callback
       (puthash id callback (neat-connection-pending conn)))
     (neat-client--log conn :out with-id)
-    (process-send-string (neat-connection-process conn)
-                         (neat-bencode-encode with-id))
+    (process-send-string (neat-connection-process conn) bytes)
     id))
 
 
@@ -318,8 +339,22 @@ CALLBACK, if given, fires for each response message."
   (neat-send conn
              '((op . "describe"))
              (lambda (resp)
-               (setf (neat-connection-capabilities conn) resp)
+               ;; A `done' sent on its own mustn't wipe out the ops.
+               (when (or (assoc "ops" resp)
+                         (not (neat-connection-capabilities conn)))
+                 (setf (neat-connection-capabilities conn) resp))
                (when callback (funcall callback resp)))))
+
+(defun neat-op-supported-p (conn op)
+  "Return non-nil if CONN's server advertises the op named OP.
+Looks at the `ops' of the stored `describe' reply, which servers send
+either as a dict keyed by op name or as a plain list of names.  With
+no reply yet, or one that lists no ops, every op counts as supported:
+better to try and get `unknown-op' back than to turn a feature off
+on a guess."
+  (let ((ops (neat-bencode-get (neat-connection-capabilities conn) "ops")))
+    (or (not (consp ops))
+        (and (if (consp (car ops)) (assoc op ops) (member op ops)) t))))
 
 (defun neat-eval (conn code &rest plist)
   "Send an `eval' op on CONN to run CODE.
@@ -344,7 +379,7 @@ PLIST is a property list of optional fields:
                 ,@(when file `((file . ,file)))
                 ,@(when line `((line . ,line)))
                 ,@(when column `((column . ,column))))))
-    (neat-send conn msg callback)))
+    (neat-client--track-eval conn (neat-send conn msg callback))))
 
 (defun neat-load-file (conn file-contents &rest plist)
   "Send a `load-file' op on CONN carrying FILE-CONTENTS.
@@ -366,7 +401,55 @@ to errors and other diagnostics."
                 ,@(when file-path `((file-path . ,file-path)))
                 ,@(when file-name `((file-name . ,file-name)))
                 ,@(when session `((session . ,session))))))
-    (neat-send conn msg callback)))
+    (neat-client--track-eval conn (neat-send conn msg callback))))
+
+(defun neat-client--track-eval (conn id)
+  "Note request ID as an eval in flight on CONN and return ID."
+  (push id (neat-connection-evals conn))
+  id)
+
+(defun neat-eval-pending-p (conn)
+  "Return non-nil while an `eval' or `load-file' on CONN awaits `done'."
+  (and (neat-connection-evals conn) t))
+
+(defcustom neat-tooling-probe-interval 5
+  "Seconds between probes of a connection whose tooling requests stall.
+See `neat-tooling-stalled-p'."
+  :type 'number
+  :group 'neat)
+
+(defun neat-tooling-stalled-p (conn)
+  "Return non-nil if tooling requests on CONN should hold off for now.
+Some servers (Babashka among them) work through one request at a time
+per connection, so anything sent behind a running eval waits for it
+to finish.  There's no telling from `describe', so this goes by what
+happened: a tooling request that timed out while an eval was in
+flight marks CONN, and the mark goes once no evals are left or a
+tooling request does get answered mid-eval.  Servers that answer
+tooling ops while an eval runs, nREPL included, never get marked.
+
+So the mark can go while the eval keeps running, or when its `done'
+never comes, the answer is nil once every
+`neat-tooling-probe-interval' seconds: that lets one request through
+to see whether the server answers now.  Ask right before sending."
+  (let ((since (neat-connection-stalled conn)))
+    (cond
+     ((not since) nil)
+     ((not (neat-eval-pending-p conn))
+      (setf (neat-connection-stalled conn) nil)
+      nil)
+     ((< (- (float-time) since) neat-tooling-probe-interval) t)
+     (t
+      (setf (neat-connection-stalled conn) (float-time))
+      nil))))
+
+(defun neat-client--note-tooling (conn answered)
+  "Update CONN's stall mark after a tooling request.
+ANSWERED nil means the request timed out, which only counts while an
+eval is in flight; see `neat-tooling-stalled-p'."
+  (cond (answered (setf (neat-connection-stalled conn) nil))
+        ((neat-eval-pending-p conn)
+         (setf (neat-connection-stalled conn) (float-time)))))
 
 (defun neat-stdin (conn input &rest plist)
   "Send a `stdin' op on CONN delivering INPUT to a paused eval.
@@ -401,11 +484,39 @@ for each response message."
 
 (defun neat-close-session (conn &optional session callback)
   "Send a `close' op on CONN to close SESSION (defaults to the current one).
+Closing CONN's current session also clears it from CONN, so later
+requests don't go out with a session the server has thrown away.
 CALLBACK, if given, fires for each response message."
   (let* ((sess (or session (neat-connection-session conn)))
          (msg `((op . "close")
                 ,@(when sess `((session . ,sess))))))
-    (neat-send conn msg callback)))
+    (prog1 (neat-send conn msg callback)
+      (when (and sess (equal sess (neat-connection-session conn)))
+        (setf (neat-connection-session conn) nil)))))
+
+(defun neat-response-error (resp &optional explained)
+  "Return a short description of the error status in RESP, or nil.
+Picks out the statuses servers send in place of any output, which
+would otherwise leave nothing to see: `namespace-not-found',
+`unknown-session', `unknown-op', and a bare `error' with no `err' or
+`ex' next to it.  EXPLAINED non-nil means the request already showed
+an `err' or `ex' earlier, so a bare `error' needs no line of its own.
+Statuses are matched by membership, as servers pair them with `done'
+and `error' in no fixed order."
+  (let ((status (neat-bencode-get resp "status")))
+    (cl-flet ((detailed (text key)
+                (let ((detail (neat-bencode-get resp key)))
+                  (if (stringp detail) (format "%s: %s" text detail) text))))
+      (cond
+       ((member "namespace-not-found" status)
+        (detailed "namespace not found" "ns"))
+       ((member "unknown-session" status) "unknown session")
+       ((member "unknown-op" status) (detailed "unknown op" "op"))
+       ((and (member "error" status)
+             (not explained)
+             (not (neat-bencode-get resp "err"))
+             (not (neat-bencode-get resp "ex")))
+        "error")))))
 
 (defun neat-completions (conn prefix &optional ns callback)
   "Send a `completions' op on CONN for PREFIX (and optionally NS).
@@ -434,44 +545,147 @@ CALLBACK, if given, fires for each response."
 ;; eldoc) can use them.  They pump `accept-process-output' until the
 ;; response arrives or the timeout fires.
 
-(defun neat-client--block-for-done (conn timeout done-p)
-  "Pump CONN's process output until calling DONE-P yields non-nil.
-Give up after TIMEOUT seconds."
-  (let ((deadline (+ (float-time) timeout)))
-    (while (and (not (funcall done-p))
-                (< (float-time) deadline))
-      (accept-process-output (neat-connection-process conn) 0.05))))
+(defun neat-client--request-sync (conn timeout send)
+  "Send a request with SEND and block until CONN's server is done with it.
+SEND is called with the callback to hand to the op function it calls,
+and must return that request's id, as the op functions do.  Pumps
+CONN's process output for up to TIMEOUT seconds.
+
+Returns the responses that arrived, in the order they came: all of
+them once `done' arrives, or whatever came before TIMEOUT ran out.
+If the connection went away first, the last one is neat's own
+`connection-closed' reply (see `neat-send').  Giving up, on the
+timeout or on \\[keyboard-quit], unregisters the callback, so a reply
+that never comes doesn't leave it behind in the pending table.  Only
+a real timeout counts toward `neat-tooling-stalled-p'."
+  (let ((deadline (+ (float-time) timeout))
+        responses done)
+    (let ((id (funcall send
+                       (lambda (resp)
+                         (push resp responses)
+                         (when (member "done" (neat-bencode-get resp "status"))
+                           (setq done t))))))
+      (unwind-protect
+          (while (and (not done)
+                      (< (float-time) deadline))
+            (accept-process-output (neat-connection-process conn) 0.05))
+        (unless done
+          (remhash id (neat-connection-pending conn))))
+      ;; Only reached when the wait ended by itself: a quit, or the
+      ;; throw `while-no-input' does for a completion UI, says nothing
+      ;; about the server.
+      (neat-client--note-tooling conn done))
+    (nreverse responses)))
+
+(defun neat-client--request-async (conn timeout send callback)
+  "Send a request with SEND and call CALLBACK with CONN's responses.
+SEND is as for `neat-client--request-sync'.  CALLBACK gets the
+responses in the order they came once `done' arrives, or whatever
+came before TIMEOUT seconds ran out.  Either way it counts toward
+`neat-tooling-stalled-p', and a timeout unregisters the request, so
+a late reply goes nowhere."
+  (let (responses finished timer id)
+    (setq id (funcall
+              send
+              (lambda (resp)
+                (push resp responses)
+                (when (and (not finished)
+                           (member "done" (neat-bencode-get resp "status")))
+                  (setq finished t)
+                  (when timer (cancel-timer timer))
+                  (neat-client--note-tooling conn t)
+                  (funcall callback (nreverse responses))))))
+    (unless finished
+      (setq timer (run-at-time
+                   timeout nil
+                   (lambda ()
+                     (unless finished
+                       (setq finished t)
+                       (remhash id (neat-connection-pending conn))
+                       (neat-client--note-tooling conn nil)
+                       (funcall callback (nreverse responses)))))))
+    id))
+
+(defun neat-client--ns-rejected-p (responses)
+  "Return non-nil if RESPONSES look like the server turned down their ns.
+That's a `namespace-not-found' status, or a bare `error' with nothing
+more specific next to it.  Servers differ in what they do with a
+namespace that isn't loaded yet, so a tooling request that named one
+and got this back, with no results, is worth repeating without it.
+An `unknown-op' or `unknown-session' comes with `error' as well, but
+has nothing to do with the ns."
+  (cl-some (lambda (resp)
+             (let ((status (neat-bencode-get resp "status")))
+               (or (member "namespace-not-found" status)
+                   (and (member "error" status)
+                        (cl-every (lambda (s) (member s '("error" "done")))
+                                  status)))))
+           responses))
 
 (defun neat-completions-sync (conn prefix &optional ns timeout)
   "Block until `completions' for PREFIX (in NS) come back from CONN.
 Return the list of candidate dicts (typically `(\"candidate\" . \"foo\")
-`(\"type\" . \"function\")' shaped) or nil on timeout.
-TIMEOUT defaults to 1 second."
-  (let (candidates done)
-    (neat-completions
-     conn prefix ns
-     (lambda (resp)
-       (let ((c (neat-bencode-get resp "completions")))
-         (when c (setq candidates (append candidates c))))
-       (when (member "done" (neat-bencode-get resp "status"))
-         (setq done t))))
-    (neat-client--block-for-done conn (or timeout 1) (lambda () done))
-    candidates))
+`(\"type\" . \"function\")' shaped), as many as arrived within
+TIMEOUT seconds (default 1).  If the server turns NS down
+\(`namespace-not-found', or a bare `error'), the request goes out
+again without it."
+  (let* ((responses (neat-client--request-sync
+                     conn (or timeout 1)
+                     (lambda (callback)
+                       (neat-completions conn prefix ns callback))))
+         (candidates (mapcan (lambda (resp)
+                               (copy-sequence
+                                (neat-bencode-get resp "completions")))
+                             responses)))
+    (if (and ns (not candidates) (neat-client--ns-rejected-p responses))
+        (neat-completions-sync conn prefix nil timeout)
+      candidates)))
 
 (defun neat-lookup-sync (conn sym &optional ns timeout)
   "Block until CONN responds to a `lookup' for SYM (in NS).
-Return the `info' dict, or nil if absent / on timeout.
-TIMEOUT defaults to 1 second."
-  (let (info done)
-    (neat-lookup
-     conn sym ns
-     (lambda (resp)
-       (let ((i (neat-bencode-get resp "info")))
-         (when i (setq info i)))
-       (when (member "done" (neat-bencode-get resp "status"))
-         (setq done t))))
-    (neat-client--block-for-done conn (or timeout 1) (lambda () done))
-    info))
+Return the `info' dict, or nil if none came within TIMEOUT seconds
+\(default 1).  If the server turns NS down (`namespace-not-found', or
+a bare `error'), the request goes out again without it."
+  (let* ((responses (neat-client--request-sync
+                     conn (or timeout 1)
+                     (lambda (callback) (neat-lookup conn sym ns callback))))
+         (info (cl-some (lambda (resp) (neat-bencode-get resp "info"))
+                        responses)))
+    (if (and ns (not info) (neat-client--ns-rejected-p responses))
+        (neat-lookup-sync conn sym nil timeout)
+      info)))
+
+(defun neat-lookup-async (conn sym ns timeout callback)
+  "Look SYM up on CONN (in NS) and call CALLBACK with the `info' dict.
+CALLBACK gets nil when the server has none or doesn't answer within
+TIMEOUT seconds; a timeout counts toward `neat-tooling-stalled-p'.
+Like `neat-lookup-sync', this asks again without NS when the server
+turns NS down."
+  (neat-client--request-async
+   conn timeout
+   (lambda (cb) (neat-lookup conn sym ns cb))
+   (lambda (responses)
+     (let ((info (cl-some (lambda (r) (neat-bencode-get r "info"))
+                          responses)))
+       (if (and ns (not info) (neat-client--ns-rejected-p responses)
+                (neat-connection-live-p conn))
+           (neat-lookup-async conn sym nil timeout callback)
+         (funcall callback info))))))
+
+(defun neat-close-session-sync (conn &optional session timeout)
+  "Close SESSION on CONN and block until the server confirms.
+SESSION defaults to CONN's current one.  Return non-nil if the server
+confirmed within TIMEOUT seconds, which defaults to 1 second; a
+connection that goes away first doesn't count."
+  (let ((status (neat-bencode-get
+                 (car (last (neat-client--request-sync
+                             conn (or timeout 1)
+                             (lambda (callback)
+                               (neat-close-session conn session callback)))))
+                 "status")))
+    (and (member "done" status)
+         (not (member "connection-closed" status))
+         t)))
 
 
 ;;;; Process filter / sentinel
@@ -491,8 +705,9 @@ bencode messages as it can."
 Malformed bencode signals `neat-bencode-error', which would otherwise
 propagate up out of the process filter and silently kill the cycle.
 We catch it here, log the offending bytes via the message log, and
-clear the recv buffer -- the protocol state is unrecoverable past
-the bad message, but at least the filter survives.  As elsewhere,
+disconnect.  Past a bad byte there's no telling where the next
+message starts, so reading on would only misparse whatever follows;
+disconnecting at least flushes every pending callback.  As elsewhere,
 `debug-on-error' steps the guard aside so the bug is visible during
 interactive debugging."
   (condition-case-unless-debug err
@@ -510,41 +725,71 @@ interactive debugging."
                                         (neat-connection-recv-buffer conn)
                                         err))
      (setf (neat-connection-recv-buffer conn) (unibyte-string))
-     (message "neat: dropped malformed bencode from %s:%s (%S)"
+     (message "neat: malformed bencode from %s:%s, disconnecting (%S)"
               (neat-connection-host conn)
               (neat-connection-port conn)
-              err))))
+              err)
+     (neat-disconnect conn))))
 
 (defun neat-client--dispatch (conn message)
   "Look up MESSAGE's callback in CONN and invoke it.
 
-When the response's status contains `done' the callback entry is
-pruned afterwards."
+A server can send any bencode value, so MESSAGE gets checked first:
+anything other than a dict is logged and skipped, a `status' sent as
+a plain string counts as a list of one, and any other `status' that
+isn't a list is dropped as if it weren't there.  Either would
+otherwise blow up in here or in the callback.  An `unknown-session'
+reply gets a `done' added if it lacks one, since nothing more can
+come for a request the server has no session for.  A message without
+a callback goes to `neat-unhandled-message-functions'.  When the
+response's status contains `done' the callback entry is pruned
+before the callback runs."
   (neat-client--log conn :in message)
-  (let* ((id (neat-bencode-get message "id"))
-         (status (neat-bencode-get message "status"))
-         (callback (and id (gethash id (neat-connection-pending conn)))))
-    (when callback
-      ;; Don't let a buggy callback nuke the whole filter.  Skip the
-      ;; trap when the user is debugging, so `toggle-debug-on-error'
-      ;; reveals the underlying problem instead of swallowing it.
-      (condition-case-unless-debug err
-          (funcall callback message)
-        (error (message "neat: callback error: %S" err))))
-    (when (and id (member "done" status))
-      (remhash id (neat-connection-pending conn)))))
+  (if (not (neat-bencode-dict-p message))
+      (neat-client--log conn :note '(skipped "not a dict"))
+    (let ((status (neat-bencode-get message "status")))
+      (when (stringp status)
+        (setq status (list status))
+        (setf (alist-get "status" message nil nil #'equal) status))
+      (cond
+       ((not (listp status))
+        (setq message (cl-remove "status" message :key #'car :test #'equal)))
+       ((and (member "unknown-session" status)
+             (not (member "done" status)))
+        (setf (alist-get "status" message nil nil #'equal)
+              (append status '("done"))))))
+    (let* ((id (neat-bencode-get message "id"))
+           (status (neat-bencode-get message "status"))
+           (callback (and id (gethash id (neat-connection-pending conn)))))
+      ;; Prune before the callback runs: one that gets quit out of
+      ;; (C-g at a prompt it opened) must not leave its request behind.
+      (when (and id (member "done" status))
+        (remhash id (neat-connection-pending conn))
+        (setf (neat-connection-evals conn)
+              (delete id (neat-connection-evals conn)))
+        (unless (neat-connection-evals conn)
+          (setf (neat-connection-stalled conn) nil)))
+      (if callback
+          ;; Don't let a buggy callback nuke the whole filter.  Skip the
+          ;; trap when the user is debugging, so `toggle-debug-on-error'
+          ;; reveals the underlying problem instead of swallowing it.
+          (condition-case-unless-debug err
+              (funcall callback message)
+            (error (message "neat: callback error: %S" err)))
+        (with-demoted-errors "neat: unhandled message hook: %S"
+          (run-hook-with-args 'neat-unhandled-message-functions
+                              conn message))))))
 
 (defun neat-client--sentinel (proc _event)
   "Sentinel for nREPL connection PROC.  Delegates to `neat-client--cleanup'."
   (unless (process-live-p proc)
     (when-let* ((conn (process-get proc 'neat-connection)))
-      (neat-client--cleanup conn "connection closed"))))
+      (neat-client--cleanup conn))))
 
-(defun neat-client--cleanup (conn reason)
+(defun neat-client--cleanup (conn)
   "Single cleanup path for a dead CONN.
 Drops CONN from `neat-connections', demotes the default if needed,
-flushes pending callbacks with REASON, and runs
-`neat-disconnect-functions'.
+flushes pending callbacks, and runs `neat-disconnect-functions'.
 
 Idempotent: the registry-membership check makes subsequent calls
 on the same connection no-ops, so `neat-disconnect' (synchronous)
@@ -556,26 +801,29 @@ updates buffers built on top."
     (setq neat-connections (delq conn neat-connections))
     (when (eq neat-default-connection conn)
       (setq neat-default-connection (car neat-connections)))
-    (neat-client--flush-pending conn reason)
+    (neat-client--flush-pending conn)
     (with-demoted-errors "neat: disconnect hook: %S"
       (run-hook-with-args 'neat-disconnect-functions conn))))
 
-(defun neat-client--flush-pending (conn reason)
+(defun neat-client--flush-pending (conn)
   "Notify every pending callback on CONN that the connection is gone.
 
-Each callback gets a synthesized response with a `done'/`interrupted'
-status and an `err' field describing REASON."
+Each callback gets a synthesized response whose status is
+\(\"done\" \"connection-closed\"), as documented in `neat-send'.
+It deliberately carries no `err' text: the caller decides how (and
+whether) to tell the user."
   (let ((pending (neat-connection-pending conn)))
     (maphash
      (lambda (id callback)
        (condition-case-unless-debug _
            (funcall callback
                     `(("id" . ,id)
-                      ("status" . ("done" "interrupted"))
-                      ("err" . ,(format "neat: %s" reason))))
+                      ("status" . ("done" "connection-closed"))))
          (error nil)))
      pending)
-    (clrhash pending)))
+    (clrhash pending)
+    (setf (neat-connection-evals conn) nil
+          (neat-connection-stalled conn) nil)))
 
 (provide 'neat-client)
 ;;; neat-client.el ends here

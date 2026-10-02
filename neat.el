@@ -162,7 +162,8 @@ disconnects it, \\[neat-connections-refresh] reloads from
       (when (derived-mode-p 'neat-connections-mode)
         (neat-connections-refresh)))))
 
-;;;###autoload
+;; Not autoloaded: the function only exists once this file is loaded,
+;; and the buffer it refreshes can't exist before that either.
 (add-hook 'neat-disconnect-functions #'neat--connections-buffer-refresh)
 
 ;;;###autoload
@@ -234,8 +235,10 @@ with `neat-mode' enabled will use it automatically."
     (neat-clone-session
      conn
      (lambda (resp)
-       (when (member "done" (neat-bencode-get resp "status"))
-         (when (buffer-live-p buffer)
+       (let ((status (neat-bencode-get resp "status")))
+         (when (and (member "done" status)
+                    (not (member "connection-closed" status))
+                    (buffer-live-p buffer))
            (with-current-buffer buffer
              (neat-repl--insert-prompt))))))
     (pop-to-buffer buffer)
@@ -259,7 +262,7 @@ explicitly via `neat-set-ns', in a major-mode hook, or via
 The default returns `neat-ns'.  Replace with a parser that reads the
 buffer for languages where the namespace is declared in source (for
 example, a `(ns foo.bar)' form in Clojure).  Whatever is returned
-becomes the `ns' field on the `eval' op.")
+becomes the `ns' field on the `eval', `completions' and `lookup' ops.")
 
 (defun neat-set-ns (ns)
   "Set the buffer-local namespace `neat-ns' to NS for subsequent evaluations.
@@ -270,21 +273,43 @@ Empty input clears the override."
   (setq neat-ns (if (string-empty-p ns) nil ns))
   (message "Neat: ns is %s" (or neat-ns "(unset)")))
 
+(defun neat--tooling-ns (conn)
+  "Return the ns to send with `completions' and `lookup' on CONN, or nil.
+That's whatever `neat-buffer-ns-function' says, falling back to the
+namespace CONN's REPL last reported.  Some servers won't answer
+either op without an ns, while others may not take one they haven't
+loaded yet, so a request whose ns gets turned down is sent again
+without it."
+  (or (funcall neat-buffer-ns-function)
+      (neat-connection-ns conn)))
+
 (defun neat--require-connection ()
   "Return the active connection, or signal a user-error."
   (or (neat-active-connection)
       (user-error "Neat: no active connection; M-x neat to start one")))
 
-(defun neat--render-into-repl (conn resp)
-  "If CONN has a REPL buffer, render RESP there; otherwise message a brief result."
-  (let ((repl (neat-repl-buffer-for conn)))
-    (if (buffer-live-p repl)
-        (with-current-buffer repl
-          (neat-repl--render-response resp))
-      (let ((value (neat-bencode-get resp "value"))
-            (err (neat-bencode-get resp "err")))
-        (cond (err (message "neat: %s" (string-trim err)))
-              (value (message "=> %s" value)))))))
+(defun neat--eval-callback (conn &optional ns)
+  "Return a callback that renders one request's responses from CONN.
+Each response is rendered in CONN's REPL buffer if it has one;
+otherwise a brief result is messaged.  NS is the namespace the
+request named, if any (see `neat-repl--request')."
+  (let ((request (neat-repl--request-create :ns ns)))
+    (lambda (resp)
+      (let ((repl (neat-repl-buffer-for conn)))
+        (if (buffer-live-p repl)
+            (with-current-buffer repl
+              (neat-repl--render-response resp request))
+          (let ((value (neat-bencode-get resp "value"))
+                (err (neat-bencode-get resp "err"))
+                (status (neat-bencode-get resp "status"))
+                (due (neat-repl--request-update request resp)))
+            (cond (err (message "neat: %s" (string-trim err)))
+                  (value (message "=> %s" value))
+                  ((car due) (message "neat: %s" (string-trim (car due))))
+                  ((cdr due) (message "neat: %s" (cdr due)))
+                  ((member "connection-closed" status)
+                   (message "neat: connection closed")))
+            (neat-repl--answer-status conn resp)))))))
 
 (defun neat--eval-string (code &optional pos)
   "Evaluate CODE on the active connection.
@@ -306,7 +331,7 @@ namespace is whatever `neat-buffer-ns-function' returns."
          (ns (funcall neat-buffer-ns-function)))
     (neat-eval conn code
                :file file :line line :column column :ns ns
-               :callback (lambda (resp) (neat--render-into-repl conn resp)))))
+               :callback (neat--eval-callback conn ns))))
 
 (defun neat-eval-last-sexp ()
   "Evaluate the sexp before point."
@@ -360,7 +385,7 @@ not necessarily resolvable on the server side."
      conn contents
      :file-path buffer-file-name
      :file-name (file-name-nondirectory buffer-file-name)
-     :callback (lambda (resp) (neat--render-into-repl conn resp)))))
+     :callback (neat--eval-callback conn))))
 
 (defun neat-switch-to-repl ()
   "Pop to the REPL buffer for the active connection."
@@ -374,15 +399,23 @@ not necessarily resolvable on the server side."
 (defun neat-interrupt-eval ()
   "Interrupt the in-flight eval on the active connection."
   (interactive)
-  (neat-interrupt (neat--require-connection)))
+  (neat-repl--interrupt (neat--require-connection)))
 
 
 ;;;; Completion-at-point and eldoc
 
 ;; These rely on the standard `completions' and `lookup' nREPL ops.
-;; Servers that don't implement them surface as `unknown-op' status
-;; responses, the sync helpers return nil, and we quietly defer to
-;; other backends.
+;; When the server's `describe' reply doesn't list the op we need,
+;; CAPF, eldoc and xref quietly step aside for other backends.  A
+;; server whose `describe' lists no ops at all gets the benefit of the
+;; doubt: the request goes out, comes back `unknown-op' if the op isn't
+;; there, the sync helpers return nil, and we end up in the same place.
+;;
+;; Completion and eldoc also hold off while `neat-tooling-stalled-p'
+;; says requests would only queue up behind a running eval, and eldoc
+;; keeps to one lookup in flight per connection.  Otherwise every
+;; completion attempt would sit out its full timeout, and eldoc
+;; lookups would pile up and all answer long after point moved on.
 
 (defcustom neat-completion-timeout 1.0
   "Seconds to wait for a `completions' response before giving up."
@@ -432,13 +465,17 @@ which is the just-locked buffer."
 
 (defun neat-show-doc-at-point ()
   "Pop a `*neat-doc*' help buffer with the docstring for the symbol at point.
-Uses the `lookup' op.  Signals a `user-error' if there's no symbol at
-point or the server doesn't know about the symbol."
+Uses the `lookup' op.  Signals a `user-error' if the server doesn't
+support `lookup', there's no symbol at point, or the server doesn't
+know about the symbol."
   (interactive)
   (let* ((conn (neat--require-connection))
+         (_ (unless (neat-op-supported-p conn "lookup")
+              (user-error "Neat: the server doesn't support lookup")))
          (sym (or (thing-at-point 'symbol t)
                   (user-error "Neat: no symbol at point")))
-         (info (neat-lookup-sync conn sym nil neat-lookup-timeout)))
+         (info (neat-lookup-sync conn sym (neat--tooling-ns conn)
+                                 neat-lookup-timeout)))
     (unless info
       (user-error "Neat: no doc for `%s'" sym))
     (neat--render-doc info)))
@@ -469,11 +506,13 @@ surfaced via `:annotation-function' in the completion UI."
              (end (cdr bounds))
              (prefix (buffer-substring-no-properties start end)))
         (when (and conn (neat-connection-live-p conn)
-                   (>= (length prefix) 1))
+                   (neat-op-supported-p conn "completions")
+                   (>= (length prefix) 1)
+                   (not (neat-tooling-stalled-p conn)))
           (let ((cands (delq nil
                              (mapcar #'neat--candidate-with-type
                                      (neat-completions-sync
-                                      conn prefix nil
+                                      conn prefix (neat--tooling-ns conn)
                                       neat-completion-timeout)))))
             (when cands
               (list start end cands
@@ -607,25 +646,48 @@ Produces the eldoc display string from a `lookup' INFO dict.  The
 default understands Clojure/Lisp-shape arglists `[a b & rest]';
 override for servers that report arglists in a different syntax.")
 
+(defvar neat--eldoc-in-flight (make-hash-table :test 'eq :weakness 'key)
+  "Connections with an eldoc lookup still waiting for its answer.
+Only one goes out at a time per connection, so lookups can't pile up
+behind a server that's busy with something else.")
+
 (defun neat-eldoc-function (callback &rest _ignored)
   "Eldoc backend driven by the `lookup' op.
 
 Conforms to `eldoc-documentation-functions': fires the supplied
-CALLBACK with the docstring once the server responds, so the UI
-never blocks waiting on a lookup.  When the user has moved point
-by the time the response arrives, eldoc may briefly show stale
-output -- acceptable trade-off for not blocking the editor."
+CALLBACK with the docstring once the server responds, or with nil
+when there's none, so the UI never blocks waiting on a lookup.  When
+the user has moved point by the time the response arrives, eldoc may
+briefly show stale output, an acceptable trade-off for not blocking
+the editor."
   (let ((conn (neat-active-connection))
         (sym (neat--eldoc-thing-at-point))
         (arg-index (funcall neat-eldoc-arg-index-function)))
-    (when (and conn sym (neat-connection-live-p conn))
-      (neat-lookup
-       conn sym nil
-       (lambda (resp)
-         (when-let* ((info (neat-bencode-get resp "info"))
-                     (str (funcall neat-eldoc-arglist-formatter
-                                   info arg-index)))
-           (funcall callback str :thing sym))))
+    (when (and conn sym (neat-connection-live-p conn)
+               (neat-op-supported-p conn "lookup")
+               (not (gethash conn neat--eldoc-in-flight))
+               (not (neat-tooling-stalled-p conn)))
+      (let ((ns (neat--tooling-ns conn))
+            (sent nil))
+        (puthash conn t neat--eldoc-in-flight)
+        (unwind-protect
+            (progn
+              (neat-lookup-async
+               conn sym ns neat-lookup-timeout
+               (lambda (info)
+                 (remhash conn neat--eldoc-in-flight)
+                 (let ((str (and info (funcall neat-eldoc-arglist-formatter
+                                               info arg-index))))
+                   ;; A nil tells eldoc there's nothing to wait for, so
+                   ;; other backends' docs can go up.
+                   (if str
+                       (funcall callback str :thing sym)
+                     (funcall callback nil)))))
+              (setq sent t))
+          ;; If the lookup never went out, no answer will come to
+          ;; clear the flag.
+          (unless sent
+            (remhash conn neat--eldoc-in-flight))))
       ;; Tell eldoc we'll call the callback asynchronously.
       t)))
 
@@ -671,10 +733,13 @@ nREPL reports columns 1-indexed; `xref-file-location' wants them
 
 (defun neat--xref-backend ()
   "`xref-backend-functions' entry for `neat-mode'.
-Returns the `neat' backend symbol when a live connection is available
-in the current buffer, otherwise nil so the next backend gets a turn."
+Returns the `neat' backend symbol when a live connection whose server
+supports `lookup' is available in the current buffer, otherwise nil so
+the next backend gets a turn."
   (when-let* ((conn (neat-active-connection)))
-    (and (neat-connection-live-p conn) 'neat)))
+    (and (neat-connection-live-p conn)
+         (neat-op-supported-p conn "lookup")
+         'neat)))
 
 (cl-defmethod xref-backend-identifier-at-point ((_backend (eql neat)))
   "Return the symbol around point as the xref identifier."
@@ -683,7 +748,8 @@ in the current buffer, otherwise nil so the next backend gets a turn."
 (cl-defmethod xref-backend-definitions ((_backend (eql neat)) identifier)
   "Resolve IDENTIFIER to its definition via the `lookup' op."
   (when-let* ((conn (neat-active-connection))
-              (info (neat-lookup-sync conn identifier nil
+              (info (neat-lookup-sync conn identifier
+                                      (neat--tooling-ns conn)
                                       neat-lookup-timeout))
               (location (neat--xref-location-from-info info)))
     (list (xref-make identifier location))))

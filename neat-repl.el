@@ -83,6 +83,12 @@ in a language with very different bracketing rules.")
 (defvar-local neat-repl--current-ns nil
   "Most-recent namespace reported by the server for this buffer.")
 
+(defvar-local neat-repl--prompt-start nil
+  "Marker at the start of the prompt waiting for input, or nil.
+Set whenever a prompt goes in and cleared once input is sent, so
+output that turns up between evals can be put above the prompt
+instead of after it.")
+
 (defvar-local neat-repl--connection-dead nil
   "Non-nil once the buffer's connection has died.
 Set by `neat-repl--handle-disconnect'.  The input sender consults this
@@ -173,10 +179,122 @@ purpose is to satisfy `comint-output-filter' and friends."
           (or neat-repl--current-ns neat-repl-default-ns)))
 
 (defun neat-repl--insert-prompt ()
-  "Insert a fresh prompt at the end of the buffer."
+  "Insert a fresh prompt at the end of the buffer.
+It starts on a line of its own, even after output that didn't end one
+or after the dead prompt of an earlier connection in a reused buffer.
+Does nothing while a prompt is already waiting for input, so two
+requests finishing back to back don't leave two prompts behind."
   (let ((proc (get-buffer-process (current-buffer))))
-    (when proc
+    (when (and proc (not neat-repl--prompt-start))
+      (unless (save-excursion (goto-char (process-mark proc)) (bolp))
+        (comint-output-filter proc "\n"))
+      (setq neat-repl--prompt-start (copy-marker (process-mark proc)))
       (comint-output-filter proc (neat-repl--prompt)))))
+
+(defun neat-repl--redraw-prompt ()
+  "Bring a waiting prompt up to date with `neat-repl--current-ns'.
+A source-buffer eval can move the session to another namespace while
+the prompt sits there showing the old one.  Anything typed after the
+prompt stays as it is."
+  (let ((proc (get-buffer-process (current-buffer))))
+    (when (and proc neat-repl--prompt-start
+               (marker-position neat-repl--prompt-start))
+      (let ((inhibit-read-only t))
+        (save-restriction
+          (widen)
+          (delete-region neat-repl--prompt-start (process-mark proc))))
+      (comint-output-filter proc (neat-repl--prompt)))))
+
+(defun neat-repl--emit-output (text face)
+  "Insert TEXT in FACE above the prompt waiting for input.
+With no prompt showing (an eval from this buffer is still running)
+TEXT just streams in at the process mark like any other output.
+Either way it goes through `comint-output-filter'.  A chunk that
+doesn't end in a newline gets one, so the prompt stays on its own
+line; the next chunk picks up where that one left off."
+  (let ((proc (get-buffer-process (current-buffer))))
+    (cond
+     ((not proc) nil)
+     ((and neat-repl--prompt-start (marker-position neat-repl--prompt-start))
+      (neat-repl--insert-above-prompt proc text face))
+     (t (comint-output-filter proc (propertize text 'face face))))))
+
+(defvar ansi-color-context-region)
+
+(defvar-local neat-repl--ansi-context nil
+  "ANSI color state for text inserted above the prompt.
+It plays the part of `ansi-color-context-region' for that text alone.
+The context streamed output uses points past the prompt, so sharing
+one would let a color left on at either end trip up the other.")
+
+(defun neat-repl--insert-above-prompt (proc text face)
+  "Insert TEXT in FACE right above the waiting prompt in PROC's buffer.
+The text goes through `comint-output-filter' itself, with the process
+mark moved to the start of the prompt for the duration, so it gets
+what any other output gets: filters, ANSI colors, carriage motion.
+A marker that moves along with insertions keeps track of the prompt,
+and the process mark and comint's record of where the prompt is are
+put back afterwards.  ANSI colors keep their own state here (see
+`neat-repl--ansi-context'), a chunk ending in a carriage return gets
+its line overwritten by the next one, as comint does for streamed
+output, and `comint-move-point-for-output' moves point to the input
+rather than onto the prompt."
+  (unless (string-empty-p text)
+    (let* ((pmark (process-mark proc))
+           (end (copy-marker (process-mark proc)))
+           (prompt (copy-marker neat-repl--prompt-start t))
+           (streamed-ansi (and (boundp 'ansi-color-context-region)
+                               ansi-color-context-region))
+           (overwrite (string-suffix-p "\r" text))
+           (text (if overwrite (string-trim-right text "\r+") text))
+           (padded (not (string-suffix-p "\n" text))))
+      (save-restriction
+        (widen)
+        (unwind-protect
+            (progn
+              (when (and (> prompt (point-min))
+                         (get-text-property (1- prompt) 'neat-repl-padding))
+                (let ((inhibit-read-only t))
+                  (delete-region (1- prompt) prompt)))
+              (set-marker pmark prompt)
+              ;; A color still on from the last chunk carries on here.
+              (when-let* ((marker (cadr neat-repl--ansi-context))
+                          ((markerp marker))
+                          ((marker-position marker)))
+                (set-marker marker prompt))
+              (setq-local ansi-color-context-region neat-repl--ansi-context)
+              ;; comint takes the last line of what it inserts for a
+              ;; prompt unless it ends in a newline, and with the
+              ;; process mark at the prompt it would move point there.
+              (let ((comint-move-point-for-output nil))
+                (comint-output-filter
+                 proc (propertize (if padded
+                                      (concat text (propertize
+                                                    "\n" 'neat-repl-padding t))
+                                    text)
+                                  'face face)))
+              (when (and overwrite padded)
+                (let ((eol (1- prompt))
+                      (inhibit-field-text-motion t))
+                  (with-silent-modifications
+                    (put-text-property (save-excursion
+                                         (goto-char eol)
+                                         (line-beginning-position))
+                                       eol 'comint-must-overwrite t)))))
+          (setq neat-repl--ansi-context ansi-color-context-region)
+          (setq-local ansi-color-context-region streamed-ansi)
+          (set-marker pmark end)
+          (set-marker neat-repl--prompt-start prompt)
+          (setq comint-last-prompt
+                (cons (copy-marker prompt) (copy-marker end)))
+          (let ((inhibit-read-only t))
+            (font-lock-append-text-property prompt end 'font-lock-face
+                                            'comint-highlight-prompt))
+          (set-marker prompt nil)
+          (set-marker end nil)))
+      (when comint-move-point-for-output
+        (dolist (window (get-buffer-window-list nil nil t))
+          (comint-adjust-window-point window proc))))))
 
 (defun neat-repl--input-complete-p (input)
   "Return non-nil if INPUT is a balanced, complete form.
@@ -208,6 +326,7 @@ Otherwise insert a newline so the user can keep typing the form."
   (let* ((buffer (current-buffer))
          (conn neat-current-connection)
          (trimmed (string-trim-right (substring-no-properties input))))
+    (setq neat-repl--prompt-start nil)
     (cond
      ((or neat-repl--connection-dead
           (and conn (not (neat-connection-live-p conn))))
@@ -217,12 +336,13 @@ Otherwise insert a newline so the user can keep typing the form."
      ((string-empty-p trimmed)
       (neat-repl--insert-prompt))
      (t
-      (neat-eval
-       conn trimmed
-       :callback (lambda (resp)
-                   (when (buffer-live-p buffer)
-                     (with-current-buffer buffer
-                       (neat-repl--render-response resp)))))))))
+      (let ((request (neat-repl--request-create :from-repl t)))
+        (neat-eval
+         conn trimmed
+         :callback (lambda (resp)
+                     (when (buffer-live-p buffer)
+                       (with-current-buffer buffer
+                         (neat-repl--render-response resp request))))))))))
 
 (defun neat-repl--handle-disconnect (conn)
   "Mark CONN's REPL buffer as closed, if it has one.
@@ -233,64 +353,231 @@ on the same dead connection are no-ops."
     (with-current-buffer buf
       (unless neat-repl--connection-dead
         (setq neat-repl--connection-dead t)
-        (let ((proc (get-buffer-process (current-buffer))))
-          (when (process-live-p proc)
-            (comint-output-filter
-             proc (propertize ";; connection closed\n"
-                              'face 'neat-repl-error))))))))
+        (when (process-live-p (get-buffer-process (current-buffer)))
+          (neat-repl--emit-output ";; connection closed\n"
+                                  'neat-repl-error))))))
 
-;;;###autoload
+;; Not autoloaded, for the same reason as the hook below.
 (add-hook 'neat-disconnect-functions #'neat-repl--handle-disconnect)
 
-(defun neat-repl--render-response (resp)
-  "Insert the user-visible parts of nREPL response RESP into the buffer."
-  (let ((proc (get-buffer-process (current-buffer)))
-        (value (neat-bencode-get resp "value"))
-        (out (neat-bencode-get resp "out"))
-        (err (neat-bencode-get resp "err"))
-        (ex (neat-bencode-get resp "ex"))
-        (ns (neat-bencode-get resp "ns"))
-        (status (neat-bencode-get resp "status")))
+(cl-defstruct (neat-repl--request (:constructor neat-repl--request-create)
+                                  (:copier nil))
+  "Rendering state for one request whose responses land in a REPL buffer.
+FROM-REPL is non-nil when the request is input typed into the REPL;
+only those get a fresh prompt at `done'.
+
+NS is the namespace the request named explicitly, if any.  The prompt
+follows the `ns' a reply reports only when NS is nil.  A request that
+names its own `ns' gets it bound for that one eval and then dropped,
+so following it would leave the prompt showing a namespace the REPL
+isn't in.  Without one the eval runs in the session's namespace, and
+an `(ns ...)' or `(in-ns ...)' in it really does move the session,
+whether it was typed into the REPL or sent from a source buffer.
+
+SAW-ERR is set once the request has printed anything on `err'.  EX
+holds the last `ex' it reported, held back until `done' and dropped
+if `err' had something to say: Basilisp and jank put the whole
+traceback in both fields, and nREPL's `ex' is only the exception
+class, so `err' is the better of the two whenever there is one."
+  from-repl ns saw-err ex)
+
+(defun neat-repl--request-update (request resp)
+  "Note RESP's `err' and `ex' on REQUEST and return what's due now.
+The result is (EX . PROBLEM).  EX is an `ex' to show now: at `done',
+when nothing came on `err'.  PROBLEM is the error status line from
+`neat-response-error', leaving out a bare `error' that an earlier
+`err' or `ex' already explained."
+  (when (neat-bencode-get resp "err")
+    (setf (neat-repl--request-saw-err request) t))
+  (when-let* ((ex (neat-bencode-get resp "ex")))
+    (setf (neat-repl--request-ex request) ex))
+  (let ((saw-err (neat-repl--request-saw-err request))
+        (ex (neat-repl--request-ex request)))
+    (cons (and (member "done" (neat-bencode-get resp "status"))
+               (not saw-err)
+               ex)
+          (neat-response-error resp (or saw-err ex)))))
+
+(defun neat-repl--render-response (resp &optional request)
+  "Insert the user-visible parts of nREPL response RESP into the buffer.
+REQUEST is the `neat-repl--request' RESP answers; pass the same one
+for every response to a request.  Without it RESP is rendered on its
+own, and an `ex' only shows up if `done' comes in the same message.
+
+Output goes above the prompt when one is waiting for input, which is
+where results of source-buffer evals land; only input typed into the
+REPL gets a fresh prompt at `done'."
+  (let* ((request (or request (neat-repl--request-create)))
+         (proc (get-buffer-process (current-buffer)))
+         (value (neat-bencode-get resp "value"))
+         (out (neat-bencode-get resp "out"))
+         (err (neat-bencode-get resp "err"))
+         (ns (neat-bencode-get resp "ns"))
+         (status (neat-bencode-get resp "status"))
+         (due (neat-repl--request-update request resp)))
     ;; Track the namespace as soon as we see one so the next prompt
-    ;; reflects any `(in-ns ...)' or namespace-switching form.
-    (when ns
-      (setq neat-repl--current-ns ns))
+    ;; reflects any `(in-ns ...)' or namespace-switching form.  A
+    ;; `namespace-not-found' reply names the namespace that isn't there.
+    (when (and ns (not (neat-repl--request-ns request))
+               (not (member "namespace-not-found" status)))
+      (unless (equal ns neat-repl--current-ns)
+        (setq neat-repl--current-ns ns)
+        (neat-repl--redraw-prompt))
+      (when neat-current-connection
+        (setf (neat-connection-ns neat-current-connection) ns)))
     (when proc
       (when out
-        (comint-output-filter
-         proc (propertize out 'face 'neat-repl-output)))
+        (neat-repl--emit-output out 'neat-repl-output))
       (when err
-        (comint-output-filter
-         proc (propertize err 'face 'neat-repl-error)))
+        (neat-repl--emit-output err 'neat-repl-error))
       (when value
-        (comint-output-filter
-         proc (concat (propertize value 'face 'neat-repl-value) "\n")))
-      (when ex
-        (comint-output-filter
-         proc (propertize (format "%s\n" ex) 'face 'neat-repl-error)))
-      (when (and (member "need-input" status)
-                 neat-current-connection
-                 (neat-connection-live-p neat-current-connection))
-        (neat-repl--handle-need-input neat-current-connection))
-      (when (member "done" status)
-        (comint-output-filter proc (neat-repl--prompt))))))
+        (neat-repl--emit-output (concat value "\n") 'neat-repl-value))
+      (when (car due)
+        (neat-repl--emit-output (format "%s\n" (car due)) 'neat-repl-error))
+      (when (cdr due)
+        (neat-repl--emit-output (format ";; %s\n" (cdr due)) 'neat-repl-error))
+      (when neat-current-connection
+        (neat-repl--answer-status neat-current-connection resp))
+      ;; A dead connection gets its own marker from
+      ;; `neat-repl--handle-disconnect'; a prompt would only invite
+      ;; input that has nowhere to go.
+      (when (and (member "done" status)
+                 (not (member "connection-closed" status))
+                 (neat-repl--request-from-repl request))
+        (neat-repl--insert-prompt)))))
 
-(defun neat-repl--handle-need-input (conn)
+(defun neat-repl--answer-status (conn resp)
+  "Deal with the statuses in RESP from CONN that need the user.
+A `need-input' gets answered from the minibuffer and an
+`unknown-session' brings up the offer of a new session.  Shared by
+the REPL and by source-buffer evals with no REPL buffer to go to."
+  (let ((status (neat-bencode-get resp "status")))
+    (when (and (member "need-input" status)
+               (neat-connection-live-p conn))
+      (neat-repl--handle-need-input conn resp))
+    (when (member "unknown-session" status)
+      (neat-repl--offer-new-session conn resp))))
+
+(defun neat-repl--offer-new-session (conn resp)
+  "Offer to clone a fresh session after CONN's server disowned one.
+RESP is the `unknown-session' reply.  When it's about CONN's current
+session that session is dropped from CONN, so later requests stop
+sending it, and the user gets asked whether to clone a new one.
+Declining leaves CONN without a session, which nREPL answers with a
+throwaway session for every request.  Either way the namespace the
+old session was in is forgotten too, by CONN and by its REPL, since
+whatever comes next starts out somewhere else."
+  (let ((session (neat-bencode-get resp "session"))
+        (current (neat-connection-session conn)))
+    (when (and current
+               (or (null session) (equal session current))
+               (neat-connection-live-p conn))
+      (setf (neat-connection-session conn) nil
+            (neat-connection-ns conn) nil)
+      (when-let* ((buf (neat-repl-buffer-for conn))
+                  ((buffer-live-p buf)))
+        (with-current-buffer buf
+          (setq neat-repl--current-ns nil)))
+      ;; C-g here means no, not a quit out of the process filter.
+      (when (condition-case nil
+                (let ((enable-recursive-minibuffers t))
+                  (y-or-n-p
+                   "Neat: the server lost this session; clone a new one? "))
+              (quit nil))
+        (neat-clone-session conn)))))
+
+(defun neat-repl--handle-unhandled-message (conn message)
+  "Show `out' and `err' from MESSAGE above the prompt in CONN's REPL.
+Run from `neat-unhandled-message-functions', so MESSAGE belongs to no
+pending request: output with no `id', or late output from an eval
+that already finished."
+  (when-let* ((buf (neat-repl-buffer-for conn))
+              ((buffer-live-p buf)))
+    (let ((out (neat-bencode-get message "out"))
+          (err (neat-bencode-get message "err")))
+      (when (or out err)
+        (with-current-buffer buf
+          (when out (neat-repl--emit-output out 'neat-repl-output))
+          (when err (neat-repl--emit-output err 'neat-repl-error)))))))
+
+;; Not autoloaded: the handler only exists once this file is loaded,
+;; and a client used without the REPL has no buffer to show output in.
+(add-hook 'neat-unhandled-message-functions
+          #'neat-repl--handle-unhandled-message)
+
+(defvar neat-repl-stdin-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map minibuffer-local-map)
+    (define-key map (kbd "C-c C-d") #'neat-repl-stdin-eof)
+    map)
+  "Keymap for the minibuffer prompt that answers a `need-input'.")
+
+(defvar neat-repl--stdin-eof nil
+  "Non-nil once the `stdin' prompt has been answered with end-of-file.")
+
+(defun neat-repl-stdin-eof ()
+  "Answer the pending `stdin' prompt with end-of-file instead of a line."
+  (interactive)
+  (setq neat-repl--stdin-eof t)
+  (exit-minibuffer))
+
+(defun neat-repl--handle-need-input (conn resp)
   "Prompt the user for a line of input and ship it to CONN via the `stdin' op.
 Server-side reads (`read-line', `input', ...) trigger a `need-input'
-status response that pauses the eval until the client replies with a
-`stdin' op.  A trailing newline is appended so `read-line'-style readers
-finish.  `C-g' at the prompt interrupts the eval instead."
-  (condition-case nil
-      (let ((input (read-string "stdin: ")))
-        (neat-stdin conn (concat input "\n")))
-    (quit (neat-interrupt conn))))
+status response RESP that pauses the eval until the client replies
+with a `stdin' op.  The reply goes to RESP's session, which needn't
+be CONN's current one.  A trailing newline is appended so
+`read-line'-style readers finish.
+
+\\<neat-repl-stdin-map>\\[neat-repl-stdin-eof] at the prompt sends \
+end-of-file (an empty `stdin') instead.
+`C-g' interrupts the eval, or sends end-of-file when the server can't
+interrupt, so the eval doesn't sit waiting forever.  The prompt opens
+even when the minibuffer is already in use, since `need-input' can
+turn up at any moment."
+  (let ((session (neat-bencode-get resp "session"))
+        (neat-repl--stdin-eof nil)
+        (enable-recursive-minibuffers t))
+    (condition-case nil
+        (let ((input (read-from-minibuffer
+                      (substitute-command-keys
+                       (concat "stdin (\\<neat-repl-stdin-map>"
+                               "\\[neat-repl-stdin-eof] for EOF): "))
+                      nil neat-repl-stdin-map)))
+          (neat-stdin conn (if neat-repl--stdin-eof "" (concat input "\n"))
+                      :session session))
+      (quit (if (neat-op-supported-p conn "interrupt")
+                (neat-repl--interrupt conn session (neat-bencode-get resp "id"))
+              (neat-stdin conn "" :session session))))))
+
+(defun neat-repl--interrupt (conn &optional session interrupt-id)
+  "Ask CONN's server to interrupt the eval it's running.
+SESSION and INTERRUPT-ID go to `neat-interrupt'.  Signals a
+`user-error' up front when the server doesn't advertise `interrupt',
+and reports any reply that says the interrupt didn't happen.  Without
+that the user would just see nothing happen."
+  (unless (neat-op-supported-p conn "interrupt")
+    (user-error "Neat: the server doesn't support interrupt"))
+  (neat-interrupt
+   conn session interrupt-id
+   (lambda (resp)
+     (let ((status (neat-bencode-get resp "status")))
+       (cond ((member "unknown-op" status)
+              (message "Neat: the server doesn't support interrupt"))
+             ((member "session-idle" status)
+              (message "Neat: nothing to interrupt"))
+             ((member "session-ephemeral" status)
+              (message "Neat: can't interrupt an eval with no session"))
+             ((member "interrupt-id-mismatch" status)
+              (message "Neat: that eval isn't the one running"))
+             ((member "error" status)
+              (message "Neat: the interrupt failed")))))))
 
 (defun neat-repl-interrupt ()
   "Send an `interrupt' op to the REPL's connection."
   (interactive)
   (if neat-current-connection
-      (neat-interrupt neat-current-connection)
+      (neat-repl--interrupt neat-current-connection)
     (user-error "Neat: no connection in this buffer")))
 
 (defun neat-repl-clear-buffer ()
@@ -300,13 +587,30 @@ underlying connection."
   (interactive)
   (let ((inhibit-read-only t))
     (erase-buffer)
+    (setq neat-repl--prompt-start nil)
     (neat-repl--insert-prompt)))
 
+(defun neat-repl--close-connection (conn &optional no-wait)
+  "Close CONN's session on the server, then disconnect CONN.
+Without the `close' the session would outlive the REPL on the server.
+Unless NO-WAIT is non-nil we wait briefly for the server to confirm,
+so its reply doesn't run into a socket that's already gone.  Cutting
+the wait short with \\[keyboard-quit] still disconnects."
+  (unwind-protect
+      (when (and (neat-connection-live-p conn)
+                 (neat-connection-session conn)
+                 (neat-op-supported-p conn "close"))
+        (ignore-errors
+          (if no-wait
+              (neat-close-session conn)
+            (neat-close-session-sync conn))))
+    (neat-disconnect conn)))
+
 (defun neat-repl-quit ()
-  "Disconnect from the nREPL server and bury this buffer."
+  "Close the REPL's session, disconnect, and bury this buffer."
   (interactive)
   (when neat-current-connection
-    (neat-disconnect neat-current-connection)
+    (neat-repl--close-connection neat-current-connection)
     (setq neat-current-connection nil))
   (let ((proc (get-buffer-process (current-buffer))))
     (when (process-live-p proc)
@@ -314,12 +618,15 @@ underlying connection."
   (bury-buffer))
 
 (defun neat-repl--kill-buffer-cleanup ()
-  "Tear down the connection, persist history, and stop the pipe process."
+  "Persist history, close the session, disconnect, and stop the pipe process.
+The `close' goes out without waiting for the reply: a kill shouldn't
+stall on a busy or wedged server."
   (when comint-input-ring-file-name
     (ignore-errors (comint-write-input-ring)))
   (when (and neat-current-connection
              (neat-connection-live-p neat-current-connection))
-    (ignore-errors (neat-disconnect neat-current-connection)))
+    (ignore-errors
+      (neat-repl--close-connection neat-current-connection 'no-wait)))
   (let ((proc (get-buffer-process (current-buffer))))
     (when (process-live-p proc)
       (delete-process proc))))

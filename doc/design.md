@@ -94,12 +94,22 @@ The single-callback model is what every responding nREPL client we
 surveyed (monroe, CIDER, vim-fireplace) uses. We're not breaking
 that pattern.
 
+Some messages don't belong to any pending request. Servers send `out`
+with no `id` at all, or keep sending it for a request that's already
+`done` (think of a `future` that prints after the eval has returned).
+Those go to `neat-unhandled-message-functions`, and the REPL buffer
+prints their output above the prompt.
+
 ### Op discovery via `describe`, no hardcoded Clojurisms
 
 nREPL is a protocol; servers advertise the ops they implement via the
-`describe` op. neat sends `describe` on connect and stashes the response
-on the connection. UI-level features like CAPF and eldoc consult that
-capability map and silently no-op when the op they need is missing.
+`describe` op. neat sends `describe` on connect and keeps the response
+on the connection, and `neat-op-supported-p` answers from it.
+Completion, eldoc and xref quietly step aside when the op they need is
+missing. The doc lookup and interrupt commands tell you instead, as
+you asked for them directly. A server that lists no ops at all gets
+the benefit of the doubt, so we just send the request and see what
+comes back.
 There are no hardcoded `clojure.repl/doc` forms, no assumption the
 server runs on a JVM, no Leiningen or Clojure CLI defaults baked into
 the connect command.
@@ -168,19 +178,16 @@ Supporting Emacs 27 would mean fallbacks for each of those and worse
 UX where the modern API does the right thing. Not worth it for a
 young project.
 
-## Integration testing as a compatibility tool
+## Integration tests
 
-The parameterised suite at `test/neat-integration-test.el` runs the
-same assertions against every nREPL implementation whose executable
-is on PATH. Today: Clojure (`nrepl/nrepl`), Babashka, Basilisp.
+The suite at `test/neat-integration-test.el` runs neat end to end
+against the reference nREPL server. It types into a real REPL buffer
+and checks what comes back, which covers the parts unit tests can
+only fake: the stdin round trip, interrupts, error statuses and
+output that arrives after `done`.
 
-This isn't just nice-to-have; it's a first step toward a real nREPL
-compatibility test suite. The contract under test is what we believe
-any conformant server should support, and concrete divergences (for
-example, Basilisp chunking `(println "hi")` into two `out` messages
-where Clojure batches them into `"hi\n"`) are exactly the findings
-that should feed back into the nREPL specification work.
-
-Adding a new implementation is a single plist entry in
-`neat-it--server-impls`: name, executable, command builder, and a
-regex for the port banner.
+It used to run the same checks against several servers, with the
+idea of growing into a compatibility suite for nREPL servers. That
+job has moved to [proof](https://github.com/nrepl/proof), which is
+built for it, so this suite sticks to one server and tests the
+client.

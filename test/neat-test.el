@@ -179,6 +179,338 @@ POS is a 1-indexed buffer position."
                       (lambda () (neat--eval-string "(+ 1 2)")))))
           (expect (plist-get plist :ns) :to-equal "derived.ns"))))))
 
+(describe "neat--eval-callback without a REPL buffer"
+  (it "reports a connection that closed under the request"
+    (let ((conn (neat-connection--make :host "nowhere" :port 1)))
+      (spy-on 'message)
+      (funcall (neat--eval-callback conn)
+               '(("id" . "1") ("status" "done" "connection-closed")))
+      (expect 'message :to-have-been-called-with
+              "neat: connection closed")))
+
+  (it "doesn't follow an err with a bare error"
+    (let* ((conn (neat-connection--make :host "nowhere" :port 1))
+           (callback (neat--eval-callback conn)))
+      (spy-on 'message)
+      (funcall callback '(("id" . "1") ("err" . "boom\n")))
+      (funcall callback '(("id" . "1") ("status" "error" "done")))
+      (expect 'message :to-have-been-called-with "neat: %s" "boom")
+      (expect 'message :not :to-have-been-called-with "neat: %s" "error")))
+
+  (it "shows an ex when nothing came on err"
+    (let* ((conn (neat-connection--make :host "nowhere" :port 1))
+           (callback (neat--eval-callback conn)))
+      (spy-on 'message)
+      (funcall callback '(("id" . "1") ("ex" . "boom") ("status" "eval-error")))
+      (funcall callback '(("id" . "1") ("status" "error" "done")))
+      (expect 'message :to-have-been-called-with "neat: %s" "boom")
+      (expect 'message :not :to-have-been-called-with "neat: %s" "error")))
+
+  (it "prompts in the minibuffer when the eval needs input"
+    (let ((conn (neat-connection--make :host "nowhere" :port 1))
+          (resp '(("id" . "1") ("session" . "S") ("status" "need-input"))))
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'neat-repl--handle-need-input)
+      (funcall (neat--eval-callback conn) resp)
+      (expect 'neat-repl--handle-need-input
+              :to-have-been-called-with conn resp)))
+
+  (it "reports an error status in the echo area"
+    (let ((conn (neat-connection--make :host "nowhere" :port 1)))
+      (spy-on 'message)
+      (funcall (neat--eval-callback conn)
+               '(("id" . "1") ("ns" . "my.typo")
+                 ("status" "done" "error" "namespace-not-found")))
+      (expect 'message :to-have-been-called-with
+              "neat: %s" "namespace not found: my.typo"))))
+
+(describe "neat"
+  :var (conn clone-callback)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 77)
+          clone-callback nil)
+    (spy-on 'neat-connect :and-return-value conn)
+    (spy-on 'neat-describe)
+    (spy-on 'neat-clone-session
+            :and-call-fake (lambda (_c cb) (setq clone-callback cb)))
+    (spy-on 'pop-to-buffer))
+
+  (after-each
+    (when-let* ((buf (neat-repl-buffer-for conn)))
+      (kill-buffer buf)))
+
+  (it "puts up the first prompt once the session is cloned"
+    (let ((neat-repl-history-file nil)
+          (neat-default-connection nil))
+      (neat "h" 77)
+      (funcall clone-callback '(("id" . "2") ("new-session" . "S")
+                                ("status" "done")))
+      (with-current-buffer (neat-repl-buffer-for conn)
+        (expect (buffer-string) :to-equal "neat> "))))
+
+  (it "doesn't put up a prompt when the connection closes first"
+    (let ((neat-repl-history-file nil)
+          (neat-default-connection nil))
+      (neat "h" 77)
+      (funcall clone-callback '(("id" . "2")
+                                ("status" "done" "connection-closed")))
+      (with-current-buffer (neat-repl-buffer-for conn)
+        (expect (buffer-string) :to-equal "")))))
+
+(describe "source-buffer evals and the REPL's ns"
+  (it "moves the prompt only when the buffer named no ns"
+    (let* ((neat-repl-history-file nil)
+           (conn (neat-connection--make :host "h" :port 78))
+           (repl (neat-repl-create-buffer conn))
+           callback)
+      (unwind-protect
+          (cl-letf (((symbol-function 'neat--require-connection)
+                     (lambda () conn))
+                    ((symbol-function 'neat-eval)
+                     (lambda (_c _code &rest plist)
+                       (setq callback (plist-get plist :callback)))))
+            (with-temp-buffer
+              (setq neat-ns "my.ns")
+              (neat--eval-string "(+ 1 2)"))
+            (funcall callback '(("id" . "1") ("ns" . "my.ns") ("value" . "3")))
+            (expect (buffer-local-value 'neat-repl--current-ns repl)
+                    :to-be nil)
+            (with-temp-buffer
+              (neat--eval-string "(ns myapp.core)"))
+            (funcall callback '(("id" . "2") ("ns" . "myapp.core")
+                                ("value" . "nil")))
+            (expect (buffer-local-value 'neat-repl--current-ns repl)
+                    :to-equal "myapp.core"))
+        (with-current-buffer repl (setq neat-current-connection nil))
+        (kill-buffer repl)))))
+
+(describe "neat--tooling-ns"
+  (it "prefers the buffer's ns"
+    (with-temp-buffer
+      (setq neat-ns "my.ns")
+      (let ((conn (neat-connection--make :ns "user")))
+        (expect (neat--tooling-ns conn) :to-equal "my.ns"))))
+
+  (it "falls back to the ns the REPL last reported"
+    (with-temp-buffer
+      (let ((conn (neat-connection--make :ns "user")))
+        (expect (neat--tooling-ns conn) :to-equal "user"))))
+
+  (it "is nil when neither knows"
+    (with-temp-buffer
+      (expect (neat--tooling-ns (neat-connection--make)) :to-be nil))))
+
+(describe "tooling ops send an ns"
+  :var (conn)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1 :ns "user"))
+    (spy-on 'neat-active-connection :and-return-value conn)
+    (spy-on 'neat-connection-live-p :and-return-value t))
+
+  (it "in completion-at-point"
+    (spy-on 'neat-completions-sync :and-return-value nil)
+    (with-temp-buffer
+      (insert "ma")
+      (neat-completion-at-point)
+      (expect 'neat-completions-sync
+              :to-have-been-called-with conn "ma" "user"
+              neat-completion-timeout)))
+
+  (it "in eldoc"
+    (spy-on 'neat-lookup)
+    (with-temp-buffer
+      (insert "(map ")
+      (neat-eldoc-function #'ignore)
+      (expect (nth 2 (spy-calls-args-for 'neat-lookup 0)) :to-equal "user")))
+
+  (it "in eldoc, trying again without it when it's turned down"
+    (let (shown)
+      (spy-on 'neat-lookup
+              :and-call-fake
+              (lambda (_c _sym ns cb)
+                (funcall cb (if ns
+                                '(("id" . "1")
+                                  ("status" "done" "error" "namespace-not-found"))
+                              '(("id" . "2") ("info" . (("doc" . "Maps.")))
+                                ("status" "done"))))))
+      (with-temp-buffer
+        (insert "(map ")
+        (neat-eldoc-function (lambda (str &rest _) (setq shown str))))
+      (expect (mapcar (lambda (args) (nth 2 args))
+                      (reverse (spy-calls-all-args 'neat-lookup)))
+              :to-equal '("user" nil))
+      (expect shown :to-equal "Maps.")))
+
+  (it "in the doc lookup"
+    (spy-on 'neat-lookup-sync :and-return-value '(("name" . "map")))
+    (spy-on 'neat--render-doc)
+    (with-temp-buffer
+      (insert "map")
+      (neat-show-doc-at-point)
+      (expect 'neat-lookup-sync
+              :to-have-been-called-with conn "map" "user" neat-lookup-timeout)))
+
+  (it "in xref find-definitions"
+    (spy-on 'neat-lookup-sync :and-return-value nil)
+    (with-temp-buffer
+      (xref-backend-definitions 'neat "map")
+      (expect 'neat-lookup-sync
+              :to-have-been-called-with conn "map" "user"
+              neat-lookup-timeout))))
+
+(describe "neat-eldoc-function"
+  (it "tells eldoc when there's nothing to show"
+    (let ((conn (neat-connection--make :host "h" :port 1))
+          (calls nil))
+      (spy-on 'neat-active-connection :and-return-value conn)
+      (spy-on 'neat-connection-live-p :and-return-value t)
+      (spy-on 'neat-lookup-async
+              :and-call-fake (lambda (_c _sym _ns _timeout cb) (funcall cb nil)))
+      (with-temp-buffer
+        (insert "(map ")
+        (neat-eldoc-function (lambda (&rest args) (push args calls))))
+      (expect calls :to-equal '((nil))))))
+
+(describe "features gated on describe"
+  :var (conn)
+  (before-each
+    ;; A server that advertises only eval, like Basilisp does for the
+    ;; tooling ops.
+    (setq conn (neat-connection--make
+                :host "h" :port 1
+                :capabilities '(("ops" . (("eval") ("clone"))))))
+    (spy-on 'neat-active-connection :and-return-value conn)
+    (spy-on 'neat-connection-live-p :and-return-value t)
+    (spy-on 'neat-completions-sync)
+    (spy-on 'neat-lookup-sync)
+    (spy-on 'neat-lookup)
+    (spy-on 'neat-interrupt))
+
+  (it "keeps completion-at-point quiet without completions"
+    (with-temp-buffer
+      (insert "ma")
+      (expect (neat-completion-at-point) :to-be nil)
+      (expect 'neat-completions-sync :not :to-have-been-called)))
+
+  (it "keeps eldoc quiet without lookup"
+    (with-temp-buffer
+      (insert "(map ")
+      (expect (neat-eldoc-function #'ignore) :to-be nil)
+      (expect 'neat-lookup :not :to-have-been-called)))
+
+  (it "steps the xref backend aside without lookup"
+    (with-temp-buffer
+      (expect (neat--xref-backend) :to-be nil)))
+
+  (it "tells the user the doc lookup isn't supported"
+    (with-temp-buffer
+      (insert "map")
+      (expect (neat-show-doc-at-point) :to-throw 'user-error)
+      (expect 'neat-lookup-sync :not :to-have-been-called)))
+
+  (it "tells the user interrupt isn't supported"
+    (expect (neat-interrupt-eval) :to-throw 'user-error)
+    (expect 'neat-interrupt :not :to-have-been-called)))
+
+(describe "tooling while an eval is in flight"
+  :var (conn)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1 :evals '("5")))
+    (spy-on 'neat-active-connection :and-return-value conn)
+    (spy-on 'neat-connection-live-p :and-return-value t)
+    (spy-on 'neat-completions-sync)
+    (spy-on 'neat-lookup))
+
+  (it "goes ahead while the server keeps answering"
+    ;; nREPL answers tooling ops mid-eval, so nothing gets held back.
+    (with-temp-buffer
+      (insert "ma")
+      (neat-completion-at-point)
+      (expect 'neat-completions-sync :to-have-been-called)))
+
+  (it "skips completion-at-point once requests stall"
+    (setf (neat-connection-stalled conn) (float-time))
+    (with-temp-buffer
+      (insert "ma")
+      (expect (neat-completion-at-point) :to-be nil)
+      (expect 'neat-completions-sync :not :to-have-been-called)))
+
+  (it "keeps eldoc to one lookup in flight"
+    (let (pending-callback)
+      (spy-on 'neat-lookup-async
+              :and-call-fake (lambda (_c _sym _ns _timeout cb)
+                               (setq pending-callback cb)))
+      (with-temp-buffer
+        (insert "(map ")
+        (expect (neat-eldoc-function #'ignore) :to-be-truthy)
+        (expect (neat-eldoc-function #'ignore) :to-be nil)
+        (expect 'neat-lookup-async :to-have-been-called-times 1)
+        ;; Once the first one is answered the next can go.
+        (funcall pending-callback nil)
+        (expect (neat-eldoc-function #'ignore) :to-be-truthy)
+        (expect 'neat-lookup-async :to-have-been-called-times 2)
+        (funcall pending-callback nil))))
+
+  (it "doesn't leave eldoc stuck when the ns or the send fails"
+    (with-temp-buffer
+      (insert "(map ")
+      (let ((neat-buffer-ns-function (lambda () (error "No ns here"))))
+        (expect (neat-eldoc-function #'ignore) :to-throw 'error))
+      (expect (gethash conn neat--eldoc-in-flight) :to-be nil)
+      (spy-on 'neat-lookup-async
+              :and-call-fake (lambda (&rest _) (error "Can't send")))
+      (expect (neat-eldoc-function #'ignore) :to-throw 'error)
+      (expect (gethash conn neat--eldoc-in-flight) :to-be nil)))
+
+  (it "skips eldoc once requests stall"
+    (setf (neat-connection-stalled conn) (float-time))
+    (with-temp-buffer
+      (insert "(map ")
+      (expect (neat-eldoc-function #'ignore) :to-be nil)
+      (expect 'neat-lookup :not :to-have-been-called))))
+
+(describe "neat-interrupt-eval"
+  :var (conn callback)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1))
+    (spy-on 'neat-active-connection :and-return-value conn)
+    (spy-on 'neat-interrupt
+            :and-call-fake (lambda (_c _s _id cb) (setq callback cb)))
+    (spy-on 'message))
+
+  (it "says so when there was nothing to interrupt"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "session-idle" "done")))
+    (expect 'message :to-have-been-called-with "Neat: nothing to interrupt"))
+
+  (it "says so when there's no session to interrupt in"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "session-ephemeral" "done")))
+    (expect 'message :to-have-been-called-with
+            "Neat: can't interrupt an eval with no session"))
+
+  (it "says so when the eval named isn't the one running"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "interrupt-id-mismatch" "done")))
+    (expect 'message :to-have-been-called-with
+            "Neat: that eval isn't the one running"))
+
+  (it "says so when the interrupt fails some other way"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "error" "done")))
+    (expect 'message :to-have-been-called-with "Neat: the interrupt failed"))
+
+  (it "stays quiet when the interrupt goes through"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "done")))
+    (expect 'message :not :to-have-been-called))
+
+  (it "says so when the server turns out not to know the op"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "error" "unknown-op" "done")))
+    (expect 'message :to-have-been-called-with
+            "Neat: the server doesn't support interrupt")))
+
 (describe "neat--lookup-file-path"
   (it "returns plain paths unchanged"
     (expect (neat--lookup-file-path "/tmp/foo.clj")

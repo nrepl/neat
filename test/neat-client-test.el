@@ -62,7 +62,8 @@
       (expect (gethash "1" (neat-connection-pending conn)) :to-be nil)))
 
   (it "ignores messages whose id has no callback registered"
-    (let ((conn (neat-connection--make)))
+    (let ((conn (neat-connection--make))
+          (neat-unhandled-message-functions nil))
       (neat-client-test--push-bytes
        conn (neat-bencode-encode '(("id" . "99") ("value" . "?"))))
       ;; If we got here without throwing, we're good.
@@ -72,17 +73,90 @@
     ;; A stray `e' is the simplest malformed input: `neat-bencode-decode'
     ;; signals `neat-bencode-error' on it.  The drain has to catch that
     ;; or the filter cycle dies silently.
+    (let* ((conn (neat-connection--make))
+           (neat-connections (list conn))
+           (debug-on-error nil))
+      (expect (neat-client-test--push-bytes conn "e") :not :to-throw)))
+
+  (it "dispatches what precedes malformed bytes, then disconnects"
+    ;; Past the bad byte there's no telling where the next message
+    ;; starts, so the trailing (valid-looking) message must not be
+    ;; dispatched; the pending callback hears about the disconnect
+    ;; instead.
+    (let* ((conn (neat-connection--make))
+           (neat-connections (list conn))
+           (neat-disconnect-functions nil)
+           (debug-on-error nil)
+           (got '()))
+      (puthash "1" (lambda (m) (push m got))
+               (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (concat (neat-bencode-encode '(("id" . "1") ("value" . "ok")))
+                    "e"
+                    (neat-bencode-encode '(("id" . "1") ("value" . "late")))))
+      (setq got (nreverse got))
+      (expect (length got) :to-equal 2)
+      (expect (neat-bencode-get (car got) "value") :to-equal "ok")
+      (expect (neat-bencode-get (cadr got) "value") :to-be nil)
+      (expect (member "done" (neat-bencode-get (cadr got) "status"))
+              :to-be-truthy)
+      (expect neat-connections :to-equal nil)
+      (expect (neat-connection-recv-buffer conn) :to-equal "")))
+
+  (it "skips top-level values that aren't dicts"
     (let ((conn (neat-connection--make))
-          (debug-on-error nil))
-      (expect (neat-client-test--push-bytes conn "e") :not :to-throw)
-      ;; And after dropping the bad bytes, a subsequent good message
-      ;; still dispatches normally.
-      (let ((got nil))
-        (puthash "1" (lambda (m) (push m got))
-                 (neat-connection-pending conn))
-        (neat-client-test--push-bytes
-         conn (neat-bencode-encode '(("id" . "1") ("value" . "ok"))))
-        (expect (length got) :to-equal 1))))
+          (got '()))
+      (puthash "1" (lambda (m) (push m got))
+               (neat-connection-pending conn))
+      (expect (neat-client-test--push-bytes
+               conn (concat (neat-bencode-encode 42)
+                            (neat-bencode-encode "id")
+                            (neat-bencode-encode ["id" "1"])
+                            (neat-bencode-encode '(("id" . "1")
+                                                   ("value" . "ok")))))
+              :not :to-throw)
+      (expect (length got) :to-equal 1)
+      (expect (neat-bencode-get (car got) "value") :to-equal "ok")))
+
+  (it "ends a request on unknown-session even without done"
+    (let ((conn (neat-connection--make :host "h" :port 1))
+          got)
+      (puthash "1" (lambda (m) (push m got)) (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1")
+                                   ("status" "error" "unknown-session"))))
+      (expect (neat-bencode-get (car got) "status")
+              :to-equal '("error" "unknown-session" "done"))
+      (expect (gethash "1" (neat-connection-pending conn)) :to-be nil)))
+
+  (it "treats a status sent as a plain string as a list of one"
+    (let ((conn (neat-connection--make))
+          (got '()))
+      (puthash "1" (lambda (m) (push m got)) (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1") ("status" . "done"))))
+      (expect (neat-bencode-get (car got) "status") :to-equal '("done"))
+      ;; So the request does finish.
+      (expect (gethash "1" (neat-connection-pending conn)) :to-be nil)))
+
+  (it "treats any other status that isn't a list as no status"
+    (let ((conn (neat-connection--make))
+          (got '()))
+      (puthash "1" (lambda (m)
+                     ;; The usual callback idiom must not choke.
+                     (member "done" (neat-bencode-get m "status"))
+                     (push m got))
+               (neat-connection-pending conn))
+      (expect (neat-client-test--push-bytes
+               conn (concat (neat-bencode-encode '(("id" . "1")
+                                                   ("status" . 7)))
+                            (neat-bencode-encode '(("id" . "1")
+                                                   ("value" . "next")))))
+              :not :to-throw)
+      ;; The message behind the bad one still went through.
+      (expect (length got) :to-equal 2)
+      (expect (assoc "status" (cadr got)) :to-be nil)
+      (expect (gethash "1" (neat-connection-pending conn)) :not :to-be nil)))
 
   (it "shields the filter from a buggy callback (production semantics)"
     ;; The dispatch wraps callbacks in `condition-case-unless-debug',
@@ -99,6 +173,287 @@
                      '(("id" . "1") ("status" . ("done")))))
               :not :to-throw)
       (expect (gethash "1" (neat-connection-pending conn)) :to-be nil))))
+
+(describe "neat-unhandled-message-functions"
+  :var (conn seen)
+  (before-each
+    (setq conn (neat-connection--make)
+          seen nil))
+
+  (it "gets messages that carry no id"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (c m) (push (cons c m) seen)))))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("out" . "hi\n"))))
+      (expect (length seen) :to-equal 1)
+      (expect (car (car seen)) :to-be conn)
+      (expect (neat-bencode-get (cdr (car seen)) "out") :to-equal "hi\n")))
+
+  (it "gets messages for an id that was never registered"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (_c m) (push m seen)))))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "99") ("out" . "?"))))
+      (expect (length seen) :to-equal 1)))
+
+  (it "gets output for a request that already finished, and a second done"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (_c m) (push m seen))))
+          (got 0))
+      (puthash "1" (lambda (_) (cl-incf got)) (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (concat (neat-bencode-encode '(("id" . "1") ("status" "done")))
+                    (neat-bencode-encode '(("id" . "1") ("out" . "late\n")))
+                    (neat-bencode-encode '(("id" . "1") ("status" "done")))))
+      (expect got :to-equal 1)
+      (setq seen (nreverse seen))
+      (expect (length seen) :to-equal 2)
+      (expect (neat-bencode-get (car seen) "out") :to-equal "late\n")
+      (expect (neat-bencode-get (cadr seen) "status") :to-equal '("done"))))
+
+  (it "doesn't get messages a pending callback claims"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (_c m) (push m seen)))))
+      (puthash "1" #'ignore (neat-connection-pending conn))
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1") ("out" . "x"))))
+      (expect seen :to-be nil)))
+
+  (it "prunes a finished request even when its callback is quit out of"
+    (let ((conn (neat-connection--make :host "h" :port 1 :evals '("1"))))
+      (puthash "1" (lambda (_) (signal 'quit nil))
+               (neat-connection-pending conn))
+      (condition-case nil
+          (neat-client-test--push-bytes
+           conn (neat-bencode-encode '(("id" . "1") ("status" "done"))))
+        (quit nil))
+      (expect (gethash "1" (neat-connection-pending conn)) :to-be nil)
+      (expect (neat-eval-pending-p conn) :to-be nil)))
+
+  (it "survives a hook function that errors (production semantics)"
+    (let ((neat-unhandled-message-functions
+           (list (lambda (_c _m) (error "boom"))))
+          (debug-on-error nil)
+          (got nil))
+      (puthash "2" (lambda (m) (push m got)) (neat-connection-pending conn))
+      (expect (neat-client-test--push-bytes
+               conn (concat (neat-bencode-encode '(("out" . "x")))
+                            (neat-bencode-encode '(("id" . "2") ("value" . "1")))))
+              :not :to-throw)
+      (expect (length got) :to-equal 1))))
+
+(describe "neat-client--flush-pending"
+  (it "hands each pending callback a connection-closed done and no err"
+    (let* ((conn (neat-connection--make))
+           (neat-connections (list conn))
+           (neat-disconnect-functions nil)
+           got)
+      (puthash "7" (lambda (m) (push m got)) (neat-connection-pending conn))
+      (neat-disconnect conn)
+      (expect got :to-equal
+              '((("id" . "7") ("status" "done" "connection-closed"))))
+      (expect (hash-table-count (neat-connection-pending conn))
+              :to-equal 0))))
+
+(describe "sync helpers"
+  (it "unregister the callback when the reply times out"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output) #'ignore))
+        (expect (neat-completions-sync conn "ma" nil 0.05) :to-be nil)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0)
+        (expect (neat-lookup-sync conn "map" nil 0.05) :to-be nil)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
+  (it "treat a connection that closes mid-request as no answer"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _) (neat-client--flush-pending conn))))
+        (expect (neat-lookup-sync conn "map" nil 1) :to-be nil))))
+
+  (it "keep what arrived before the timeout"
+    (let ((conn (neat-connection--make))
+          (sent nil))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _)
+                   (unless sent
+                     (setq sent t)
+                     (neat-client-test--push-bytes
+                      conn (neat-bencode-encode
+                            '(("id" . "1")
+                              ("completions" . ((("candidate" . "map")))))))))))
+        (expect (neat-completions-sync conn "ma" nil 0.1)
+                :to-equal '((("candidate" . "map"))))
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
+  (it "don't take a wait cut short for a stalled server"
+    ;; A quit, or the throw `while-no-input' does when a completion UI
+    ;; gets new input, says nothing about the server.
+    (let ((conn (neat-connection--make :evals '("5"))))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _) (throw 'neat-test-input t))))
+        (catch 'neat-test-input
+          (neat-completions-sync conn "ma" nil 1))
+        (expect (neat-connection-stalled conn) :to-be nil)
+        (condition-case nil
+            (cl-letf (((symbol-function 'accept-process-output)
+                       (lambda (&rest _) (signal 'quit nil))))
+              (neat-completions-sync conn "ma" nil 1))
+          (quit nil))
+        (expect (neat-connection-stalled conn) :to-be nil)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
+  (it "unregister the callback when the wait is quit out of"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _) (signal 'quit nil))))
+        (condition-case nil
+            (neat-completions-sync conn "ma" nil 1)
+          (quit nil))
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
+  (it "return what arrived before done"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _)
+                   (neat-client-test--push-bytes
+                    conn (neat-bencode-encode
+                          '(("id" . "1")
+                            ("completions" . ((("candidate" . "map"))))
+                            ("status" "done")))))))
+        (expect (neat-completions-sync conn "ma" nil 1)
+                :to-equal '((("candidate" . "map"))))))))
+
+(defun neat-client-test--fake-server (conn reply-fn)
+  "Make CONN's sends get an answer from REPLY-FN.
+REPLY-FN gets each decoded request and returns the reply dicts; the
+returned function goes in place of `process-send-string'."
+  (lambda (_proc bytes)
+    (let ((request (car (neat-bencode-decode bytes))))
+      (dolist (reply (funcall reply-fn request))
+        (neat-client-test--push-bytes
+         conn (neat-bencode-encode
+               (cons (cons "id" (neat-bencode-get request "id")) reply)))))))
+
+(describe "sync tooling ops and an ns the server turns down"
+  :var (conn sent-ns)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1)
+          sent-ns nil))
+
+  (it "retry completions without the ns"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (req)
+                       (push (neat-bencode-get req "ns") sent-ns)
+                       (if (neat-bencode-get req "ns")
+                           '((("status" "done" "error" "namespace-not-found")))
+                         '((("completions" . ((("candidate" . "map"))))
+                            ("status" "done"))))))))
+      (expect (neat-completions-sync conn "ma" "not.loaded")
+              :to-equal '((("candidate" . "map"))))
+      (expect (nreverse sent-ns) :to-equal '("not.loaded" nil))))
+
+  (it "retry lookup without the ns after a bare error"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (req)
+                       (push (neat-bencode-get req "ns") sent-ns)
+                       (if (neat-bencode-get req "ns")
+                           '((("status" "error" "done")))
+                         '((("info" . (("name" . "map")))
+                            ("status" "done"))))))))
+      (expect (neat-lookup-sync conn "map" "not.loaded")
+              :to-equal '(("name" . "map")))
+      (expect (nreverse sent-ns) :to-equal '("not.loaded" nil))))
+
+  (it "don't retry on an error that has nothing to do with the ns"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (req)
+                       (push (neat-bencode-get req "ns") sent-ns)
+                       '((("status" "done" "error" "unknown-op")))))))
+      (expect (neat-completions-sync conn "ma" "user") :to-be nil)
+      (expect sent-ns :to-equal '("user"))))
+
+  (it "retry the async lookup without the ns too"
+    (let (got)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (neat-client-test--fake-server
+                  conn (lambda (req)
+                         (push (neat-bencode-get req "ns") sent-ns)
+                         (if (neat-bencode-get req "ns")
+                             '((("status" "done" "error" "namespace-not-found")))
+                           '((("info" . (("name" . "map")))
+                              ("status" "done"))))))))
+        (neat-lookup-async conn "map" "not.loaded" 1
+                           (lambda (i) (setq got i))))
+      (expect got :to-equal '(("name" . "map")))
+      (expect (nreverse sent-ns) :to-equal '("not.loaded" nil))))
+
+  (it "don't retry when the ns was fine"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (req)
+                       (push (neat-bencode-get req "ns") sent-ns)
+                       '((("status" "done")))))))
+      (expect (neat-completions-sync conn "zz" "user") :to-be nil)
+      (expect sent-ns :to-equal '("user")))))
+
+(describe "neat-close-session-sync"
+  (it "returns non-nil once the server confirms the close"
+    (let ((conn (neat-connection--make :session "S-1")))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _)
+                   (neat-client-test--push-bytes
+                    conn (neat-bencode-encode
+                          '(("id" . "1") ("status" "done" "session-closed")))))))
+        (expect (neat-close-session-sync conn) :to-be-truthy)
+        (expect (neat-connection-session conn) :to-be nil))))
+
+  (it "gives up after the timeout"
+    (let ((conn (neat-connection--make :session "S-1")))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output) #'ignore))
+        (expect (neat-close-session-sync conn nil 0.05) :to-be nil)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0))))
+
+  (it "doesn't count a connection that went away as confirmation"
+    (let ((conn (neat-connection--make :session "S-1")))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore)
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _) (neat-client--flush-pending conn))))
+        (expect (neat-close-session-sync conn) :to-be nil)))))
 
 (describe "neat-clone-session"
   (it "captures new-session from the response and assigns it to the connection"
@@ -133,6 +488,140 @@
         (expect (neat-bencode-get (neat-connection-capabilities conn)
                                   "versions")
                 :not :to-be nil)))))
+
+(describe "neat-describe (ops)"
+  (it "keeps the ops when done comes in a message of its own"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore))
+        (neat-describe conn)
+        ;; Empty dicts can't be written as alists, so raw bencode it is.
+        (neat-client-test--push-bytes
+         conn (concat "d2:id1:13:opsd5:clonede4:evaldeee"
+                      (neat-bencode-encode '(("id" . "1") ("status" "done")))))
+        (expect (neat-op-supported-p conn "eval") :to-be-truthy)
+        (expect (neat-op-supported-p conn "interrupt") :to-be nil)))))
+
+(describe "neat-op-supported-p"
+  (it "reads ops sent as a dict"
+    (let ((conn (neat-connection--make
+                 :capabilities (car (neat-bencode-decode
+                                     "d3:opsd5:clonede4:evald3:doc1:xeeee")))))
+      (expect (neat-op-supported-p conn "eval") :to-be-truthy)
+      (expect (neat-op-supported-p conn "clone") :to-be-truthy)
+      (expect (neat-op-supported-p conn "interrupt") :to-be nil)))
+
+  (it "reads ops sent as a list"
+    (let ((conn (neat-connection--make
+                 :capabilities (car (neat-bencode-decode
+                                     "d3:opsl5:clone4:evalee")))))
+      (expect (neat-op-supported-p conn "eval") :to-be-truthy)
+      (expect (neat-op-supported-p conn "lookup") :to-be nil)))
+
+  (it "treats every op as supported before describe answers"
+    (expect (neat-op-supported-p (neat-connection--make) "interrupt")
+            :to-be-truthy))
+
+  (it "treats every op as supported when describe lists none"
+    (dolist (caps (list '(("versions" . (("nrepl" . (("major" . 1))))))
+                        (car (neat-bencode-decode "d3:opsdee"))
+                        (car (neat-bencode-decode "d3:opslee"))))
+      (expect (neat-op-supported-p (neat-connection--make :capabilities caps)
+                                   "interrupt")
+              :to-be-truthy))))
+
+(describe "neat-interrupt"
+  (it "builds an interrupt op with session and interrupt-id"
+    (let ((conn (neat-connection--make))
+          sent)
+      (setf (neat-connection-session conn) "S-3")
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-interrupt conn nil "42")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "op") :to-equal "interrupt")
+          (expect (neat-bencode-get decoded "session") :to-equal "S-3")
+          (expect (neat-bencode-get decoded "interrupt-id")
+                  :to-equal "42")))))
+
+  (it "omits interrupt-id when none is given"
+    (let ((conn (neat-connection--make))
+          sent)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-interrupt conn "S-4")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "session") :to-equal "S-4")
+          (expect (assoc "interrupt-id" decoded) :to-be nil))))))
+
+(describe "neat-close-session"
+  (it "builds a close op for the current session"
+    (let ((conn (neat-connection--make))
+          sent)
+      (setf (neat-connection-session conn) "S-5")
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-close-session conn)
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "op") :to-equal "close")
+          (expect (neat-bencode-get decoded "session") :to-equal "S-5")))))
+
+  (it "clears the connection's session when closing it"
+    (let ((conn (neat-connection--make :session "S-5")))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore))
+        (neat-close-session conn)
+        (expect (neat-connection-session conn) :to-be nil))))
+
+  (it "keeps the connection's session when closing another one"
+    (let ((conn (neat-connection--make :session "S-5"))
+          sent)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-close-session conn "S-6")
+        (expect (neat-bencode-get (car (neat-bencode-decode sent)) "session")
+                :to-equal "S-6")
+        (expect (neat-connection-session conn) :to-equal "S-5")))))
+
+(describe "neat-response-error"
+  (it "describes namespace-not-found, naming the ns when the server does"
+    (expect (neat-response-error
+             '(("status" "done" "error" "namespace-not-found")
+               ("ns" . "my.typo")))
+            :to-equal "namespace not found: my.typo")
+    (expect (neat-response-error
+             '(("status" "namespace-not-found" "done" "error")))
+            :to-equal "namespace not found"))
+
+  (it "describes unknown-session"
+    (expect (neat-response-error '(("status" "error" "unknown-session" "done")))
+            :to-equal "unknown session"))
+
+  (it "describes unknown-op, naming the op when the server does"
+    (expect (neat-response-error
+             '(("status" "done" "error" "unknown-op") ("op" . "load-file")))
+            :to-equal "unknown op: load-file"))
+
+  (it "describes a bare error"
+    (expect (neat-response-error '(("status" "error" "done")))
+            :to-equal "error"))
+
+  (it "leaves a bare error alone when the request already explained it"
+    (expect (neat-response-error '(("status" "error" "done")) t) :to-be nil))
+
+  (it "leaves an error that comes with its own explanation alone"
+    (expect (neat-response-error '(("status" "error") ("err" . "boom\n")))
+            :to-be nil)
+    (expect (neat-response-error '(("status" "error") ("ex" . "boom")))
+            :to-be nil))
+
+  (it "is nil for ordinary statuses"
+    (dolist (status '(("done") ("eval-error") ("need-input") nil))
+      (expect (neat-response-error `(("status" . ,status))) :to-be nil))))
 
 (describe "neat-eval"
   (it "includes the session and code fields in the sent message"
@@ -175,6 +664,121 @@
           (expect (assoc "line" decoded) :to-be nil)
           (expect (assoc "column" decoded) :to-be nil)
           (expect (assoc "ns" decoded) :to-be nil))))))
+
+(describe "neat-eval-pending-p"
+  :var (conn)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1)))
+
+  (it "is true from an eval until its done"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string) #'ignore))
+      (expect (neat-eval-pending-p conn) :to-be nil)
+      (neat-eval conn "(+ 1 2)")
+      (expect (neat-eval-pending-p conn) :to-be-truthy)
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1") ("value" . "3"))))
+      (expect (neat-eval-pending-p conn) :to-be-truthy)
+      (neat-client-test--push-bytes
+       conn (neat-bencode-encode '(("id" . "1") ("status" "done"))))
+      (expect (neat-eval-pending-p conn) :to-be nil)))
+
+  (it "counts load-file but not tooling ops"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string) #'ignore))
+      (neat-completions conn "ma")
+      (neat-lookup conn "map")
+      (expect (neat-eval-pending-p conn) :to-be nil)
+      (neat-load-file conn "(def x 1)")
+      (expect (neat-eval-pending-p conn) :to-be-truthy)))
+
+  (it "clears when the connection goes away"
+    (let ((neat-connections (list conn))
+          (neat-disconnect-functions nil))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore))
+        (neat-eval conn "(Thread/sleep 10000)" :callback #'ignore))
+      (neat-disconnect conn)
+      (expect (neat-eval-pending-p conn) :to-be nil))))
+
+(describe "neat-tooling-stalled-p"
+  :var (conn)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1)))
+
+  (it "turns on when a sync request times out behind an eval"
+    (setf (neat-connection-evals conn) '("5"))
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string) #'ignore)
+              ((symbol-function 'accept-process-output) #'ignore))
+      (neat-completions-sync conn "ma" nil 0.05))
+    (expect (neat-tooling-stalled-p conn) :to-be-truthy))
+
+  (it "stays off when the timeout had no eval to blame"
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string) #'ignore)
+              ((symbol-function 'accept-process-output) #'ignore))
+      (neat-completions-sync conn "ma" nil 0.05))
+    (expect (neat-connection-stalled conn) :to-be nil))
+
+  (it "turns off once the evals are done"
+    (setf (neat-connection-evals conn) '("5")
+          (neat-connection-stalled conn) (float-time))
+    (neat-client-test--push-bytes
+     conn (neat-bencode-encode '(("id" . "5") ("status" "done"))))
+    (expect (neat-tooling-stalled-p conn) :to-be nil))
+
+  (it "turns off when a sync request gets answered mid-eval"
+    (setf (neat-connection-evals conn) '("5")
+          (neat-connection-stalled conn) (float-time))
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'accept-process-output) #'ignore)
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (_req) '((("info" . (("name" . "map")))
+                                      ("status" "done")))))))
+      (neat-lookup-sync conn "map"))
+    (expect (neat-tooling-stalled-p conn) :to-be nil))
+
+  (it "lets one request through as a probe every so often"
+    (let ((neat-tooling-probe-interval 5))
+      (setf (neat-connection-evals conn) '("5")
+            (neat-connection-stalled conn) (- (float-time) 10))
+      (expect (neat-tooling-stalled-p conn) :to-be nil)
+      ;; The probe restarted the clock, so the next one has to wait.
+      (expect (neat-tooling-stalled-p conn) :to-be-truthy)))
+
+  (it "turns on when an async lookup times out behind an eval"
+    (let (got (called nil))
+      (setf (neat-connection-evals conn) '("5"))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore))
+        (neat-lookup-async conn "map" nil 0.01
+                           (lambda (info) (setq called t got info)))
+        (sleep-for 0.1))
+      (expect called :to-be-truthy)
+      (expect got :to-be nil)
+      (expect (hash-table-count (neat-connection-pending conn)) :to-equal 0)
+      (expect (neat-tooling-stalled-p conn) :to-be-truthy)))
+
+  (it "turns off when an async lookup is answered mid-eval"
+    (setf (neat-connection-evals conn) '("5")
+          (neat-connection-stalled conn) (float-time))
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string)
+               (neat-client-test--fake-server
+                conn (lambda (_req) '((("info" . (("name" . "map")))
+                                      ("status" "done")))))))
+      (neat-lookup-async conn "map" nil 1 #'ignore))
+    (expect (neat-tooling-stalled-p conn) :to-be nil))
+
+  (it "turns off when the connection goes away"
+    (let ((neat-connections (list conn))
+          (neat-disconnect-functions nil))
+      (setf (neat-connection-evals conn) '("5")
+            (neat-connection-stalled conn) (float-time))
+      (neat-disconnect conn)
+      (expect (neat-connection-stalled conn) :to-be nil))))
 
 (describe "neat-load-file"
   (it "builds a load-file op with contents and metadata"
@@ -422,6 +1026,21 @@
         (push (neat-send conn '((op . "describe"))) ids)
         (push (neat-send conn '((op . "describe"))) ids)
         (expect (nreverse ids) :to-equal '("1" "2" "3")))))
+
+  (it "leaves nothing behind when the message can't be encoded"
+    (let ((conn (neat-connection--make))
+          (neat-log-messages t)
+          logged)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (&rest _) (error "Should not send")))
+                ((symbol-function 'neat-client--log)
+                 (lambda (&rest _) (setq logged t))))
+        (expect (neat-send conn '((op . "eval") (ns . nil)) #'ignore)
+                :to-throw 'neat-bencode-error)
+        (expect (hash-table-count (neat-connection-pending conn))
+                :to-equal 0)
+        (expect logged :to-be nil))))
 
   (it "errors when the connection is not live"
     (let ((conn (neat-connection--make)))
