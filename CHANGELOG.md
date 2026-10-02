@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- [#2](https://github.com/nrepl/neat/pull/2): Handle the less common parts of the protocol properly:
+  - Late and id-less output shows up above the REPL prompt, and so do the results of source-buffer evals.
+  - Error statuses that come without an `err` (`namespace-not-found`, `unknown-session`, `unknown-op`) are reported, and an `unknown-session` reply offers to clone a new session.
+  - The stdin prompt can send end of input with `C-c C-d`.
+  - Completion, eldoc and interrupt check `describe` first, and completion and eldoc back off on servers that answer one request at a time.
+  - Quitting the REPL closes its session on the server.
+  - Requests still pending when a connection drops get a `connection-closed` status instead of `interrupted`, and `neat-bencode-encode` signals on nil.
+
 ## [0.1.0] - 2026-05-20
 
 ### Added
