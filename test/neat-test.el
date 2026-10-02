@@ -335,6 +335,89 @@ POS is a 1-indexed buffer position."
         (neat-eldoc-function (lambda (&rest args) (push args calls))))
       (expect calls :to-equal '((nil))))))
 
+(describe "features gated on describe"
+  :var (conn)
+  (before-each
+    ;; A server that advertises only eval, like Basilisp does for the
+    ;; tooling ops.
+    (setq conn (neat-connection--make
+                :host "h" :port 1
+                :capabilities '(("ops" . (("eval") ("clone"))))))
+    (spy-on 'neat-active-connection :and-return-value conn)
+    (spy-on 'neat-connection-live-p :and-return-value t)
+    (spy-on 'neat-completions-sync)
+    (spy-on 'neat-lookup-sync)
+    (spy-on 'neat-lookup)
+    (spy-on 'neat-interrupt))
+
+  (it "keeps completion-at-point quiet without completions"
+    (with-temp-buffer
+      (insert "ma")
+      (expect (neat-completion-at-point) :to-be nil)
+      (expect 'neat-completions-sync :not :to-have-been-called)))
+
+  (it "keeps eldoc quiet without lookup"
+    (with-temp-buffer
+      (insert "(map ")
+      (expect (neat-eldoc-function #'ignore) :to-be nil)
+      (expect 'neat-lookup :not :to-have-been-called)))
+
+  (it "steps the xref backend aside without lookup"
+    (with-temp-buffer
+      (expect (neat--xref-backend) :to-be nil)))
+
+  (it "tells the user the doc lookup isn't supported"
+    (with-temp-buffer
+      (insert "map")
+      (expect (neat-show-doc-at-point) :to-throw 'user-error)
+      (expect 'neat-lookup-sync :not :to-have-been-called)))
+
+  (it "tells the user interrupt isn't supported"
+    (expect (neat-interrupt-eval) :to-throw 'user-error)
+    (expect 'neat-interrupt :not :to-have-been-called)))
+
+(describe "neat-interrupt-eval"
+  :var (conn callback)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1))
+    (spy-on 'neat-active-connection :and-return-value conn)
+    (spy-on 'neat-interrupt
+            :and-call-fake (lambda (_c _s _id cb) (setq callback cb)))
+    (spy-on 'message))
+
+  (it "says so when there was nothing to interrupt"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "session-idle" "done")))
+    (expect 'message :to-have-been-called-with "Neat: nothing to interrupt"))
+
+  (it "says so when there's no session to interrupt in"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "session-ephemeral" "done")))
+    (expect 'message :to-have-been-called-with
+            "Neat: can't interrupt an eval with no session"))
+
+  (it "says so when the eval named isn't the one running"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "interrupt-id-mismatch" "done")))
+    (expect 'message :to-have-been-called-with
+            "Neat: that eval isn't the one running"))
+
+  (it "says so when the interrupt fails some other way"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "error" "done")))
+    (expect 'message :to-have-been-called-with "Neat: the interrupt failed"))
+
+  (it "stays quiet when the interrupt goes through"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "done")))
+    (expect 'message :not :to-have-been-called))
+
+  (it "says so when the server turns out not to know the op"
+    (neat-interrupt-eval)
+    (funcall callback '(("id" . "2") ("status" "error" "unknown-op" "done")))
+    (expect 'message :to-have-been-called-with
+            "Neat: the server doesn't support interrupt")))
+
 (describe "neat--lookup-file-path"
   (it "returns plain paths unchanged"
     (expect (neat--lookup-file-path "/tmp/foo.clj")

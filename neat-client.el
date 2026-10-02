@@ -335,8 +335,22 @@ CALLBACK, if given, fires for each response message."
   (neat-send conn
              '((op . "describe"))
              (lambda (resp)
-               (setf (neat-connection-capabilities conn) resp)
+               ;; A `done' sent on its own mustn't wipe out the ops.
+               (when (or (assoc "ops" resp)
+                         (not (neat-connection-capabilities conn)))
+                 (setf (neat-connection-capabilities conn) resp))
                (when callback (funcall callback resp)))))
+
+(defun neat-op-supported-p (conn op)
+  "Return non-nil if CONN's server advertises the op named OP.
+Looks at the `ops' of the stored `describe' reply, which servers send
+either as a dict keyed by op name or as a plain list of names.  With
+no reply yet, or one that lists no ops, every op counts as supported:
+better to try and get `unknown-op' back than to turn a feature off
+on a guess."
+  (let ((ops (neat-bencode-get (neat-connection-capabilities conn) "ops")))
+    (or (not (consp ops))
+        (and (if (consp (car ops)) (assoc op ops) (member op ops)) t))))
 
 (defun neat-eval (conn code &rest plist)
   "Send an `eval' op on CONN to run CODE.

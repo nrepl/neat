@@ -441,11 +441,33 @@ finish.  `C-g' at the prompt interrupts the eval instead."
         (neat-stdin conn (concat input "\n")))
     (quit (neat-interrupt conn))))
 
+(defun neat-repl--interrupt (conn)
+  "Ask CONN's server to interrupt the eval it's running.
+Signals a `user-error' up front when the server doesn't advertise
+`interrupt', and reports any reply that says the interrupt didn't
+happen.  Without that the user would just see nothing happen."
+  (unless (neat-op-supported-p conn "interrupt")
+    (user-error "Neat: the server doesn't support interrupt"))
+  (neat-interrupt
+   conn nil nil
+   (lambda (resp)
+     (let ((status (neat-bencode-get resp "status")))
+       (cond ((member "unknown-op" status)
+              (message "Neat: the server doesn't support interrupt"))
+             ((member "session-idle" status)
+              (message "Neat: nothing to interrupt"))
+             ((member "session-ephemeral" status)
+              (message "Neat: can't interrupt an eval with no session"))
+             ((member "interrupt-id-mismatch" status)
+              (message "Neat: that eval isn't the one running"))
+             ((member "error" status)
+              (message "Neat: the interrupt failed")))))))
+
 (defun neat-repl-interrupt ()
   "Send an `interrupt' op to the REPL's connection."
   (interactive)
   (if neat-current-connection
-      (neat-interrupt neat-current-connection)
+      (neat-repl--interrupt neat-current-connection)
     (user-error "Neat: no connection in this buffer")))
 
 (defun neat-repl-clear-buffer ()

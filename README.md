@@ -205,12 +205,14 @@ the source (Clojure's `(ns foo.bar)`, etc.), swap in a parser via
 ### Eldoc, completion, or `M-.` quietly do nothing
 
 The CAPF, eldoc backend, and xref backend all rely on the standard
-`completions` and `lookup` nREPL ops. If your server doesn't implement
-them, our sync helpers return nil and we defer silently - that's by
-design, a language-agnostic client can't assume anything.
+`completions` and `lookup` nREPL ops. neat checks the ops the server
+lists in its `describe` reply, and when one of them is missing these
+features stay out of the way - that's by design, a language-agnostic
+client can't assume anything.
 
 Diagnosis: turn on the message log (next-to-last entry below) and
-look for `unknown-op` in the status.
+look at the `ops` in the `describe` reply, or for `unknown-op` in a
+status.
 
 ### Evaluation just sits there
 
@@ -221,7 +223,8 @@ Three usual suspects:
 - The connection died. The mode-line shows `[closed]` and a
   `;; connection closed` line appears in the REPL buffer.
 - The eval is actually running, just slowly. `C-c C-c` in the REPL
-  (or `C-c C-k` in a source buffer) sends an `interrupt` op.
+  (or `C-c C-k` in a source buffer) sends an `interrupt` op. Not every
+  server has one, and neat tells you when yours doesn't.
 
 ### Evaluation lands in the wrong namespace
 
