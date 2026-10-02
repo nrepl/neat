@@ -393,15 +393,17 @@ not necessarily resolvable on the server side."
 (defun neat-interrupt-eval ()
   "Interrupt the in-flight eval on the active connection."
   (interactive)
-  (neat-interrupt (neat--require-connection)))
+  (neat-repl--interrupt (neat--require-connection)))
 
 
 ;;;; Completion-at-point and eldoc
 
 ;; These rely on the standard `completions' and `lookup' nREPL ops.
-;; Servers that don't implement them surface as `unknown-op' status
-;; responses, the sync helpers return nil, and we quietly defer to
-;; other backends.
+;; When the server's `describe' reply doesn't list the op we need,
+;; CAPF, eldoc and xref quietly step aside for other backends.  A
+;; server whose `describe' lists no ops at all gets the benefit of the
+;; doubt: the request goes out, comes back `unknown-op' if the op isn't
+;; there, the sync helpers return nil, and we end up in the same place.
 
 (defcustom neat-completion-timeout 1.0
   "Seconds to wait for a `completions' response before giving up."
@@ -451,10 +453,13 @@ which is the just-locked buffer."
 
 (defun neat-show-doc-at-point ()
   "Pop a `*neat-doc*' help buffer with the docstring for the symbol at point.
-Uses the `lookup' op.  Signals a `user-error' if there's no symbol at
-point or the server doesn't know about the symbol."
+Uses the `lookup' op.  Signals a `user-error' if the server doesn't
+support `lookup', there's no symbol at point, or the server doesn't
+know about the symbol."
   (interactive)
   (let* ((conn (neat--require-connection))
+         (_ (unless (neat-op-supported-p conn "lookup")
+              (user-error "Neat: the server doesn't support lookup")))
          (sym (or (thing-at-point 'symbol t)
                   (user-error "Neat: no symbol at point")))
          (info (neat-lookup-sync conn sym (neat--tooling-ns conn)
@@ -489,6 +494,7 @@ surfaced via `:annotation-function' in the completion UI."
              (end (cdr bounds))
              (prefix (buffer-substring-no-properties start end)))
         (when (and conn (neat-connection-live-p conn)
+                   (neat-op-supported-p conn "completions")
                    (>= (length prefix) 1))
           (let ((cands (delq nil
                              (mapcar #'neat--candidate-with-type
@@ -639,7 +645,8 @@ the editor."
   (let ((conn (neat-active-connection))
         (sym (neat--eldoc-thing-at-point))
         (arg-index (funcall neat-eldoc-arg-index-function)))
-    (when (and conn sym (neat-connection-live-p conn))
+    (when (and conn sym (neat-connection-live-p conn)
+               (neat-op-supported-p conn "lookup"))
       (neat-lookup-async
        conn sym (neat--tooling-ns conn)
        (lambda (info)
@@ -695,10 +702,13 @@ nREPL reports columns 1-indexed; `xref-file-location' wants them
 
 (defun neat--xref-backend ()
   "`xref-backend-functions' entry for `neat-mode'.
-Returns the `neat' backend symbol when a live connection is available
-in the current buffer, otherwise nil so the next backend gets a turn."
+Returns the `neat' backend symbol when a live connection whose server
+supports `lookup' is available in the current buffer, otherwise nil so
+the next backend gets a turn."
   (when-let* ((conn (neat-active-connection)))
-    (and (neat-connection-live-p conn) 'neat)))
+    (and (neat-connection-live-p conn)
+         (neat-op-supported-p conn "lookup")
+         'neat)))
 
 (cl-defmethod xref-backend-identifier-at-point ((_backend (eql neat)))
   "Return the symbol around point as the xref identifier."

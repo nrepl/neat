@@ -404,6 +404,86 @@ returned function goes in place of `process-send-string'."
                                   "versions")
                 :not :to-be nil)))))
 
+(describe "neat-describe (ops)"
+  (it "keeps the ops when done comes in a message of its own"
+    (let ((conn (neat-connection--make)))
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string) #'ignore))
+        (neat-describe conn)
+        ;; Empty dicts can't be written as alists, so raw bencode it is.
+        (neat-client-test--push-bytes
+         conn (concat "d2:id1:13:opsd5:clonede4:evaldeee"
+                      (neat-bencode-encode '(("id" . "1") ("status" "done")))))
+        (expect (neat-op-supported-p conn "eval") :to-be-truthy)
+        (expect (neat-op-supported-p conn "interrupt") :to-be nil)))))
+
+(describe "neat-op-supported-p"
+  (it "reads ops sent as a dict"
+    (let ((conn (neat-connection--make
+                 :capabilities (car (neat-bencode-decode
+                                     "d3:opsd5:clonede4:evald3:doc1:xeeee")))))
+      (expect (neat-op-supported-p conn "eval") :to-be-truthy)
+      (expect (neat-op-supported-p conn "clone") :to-be-truthy)
+      (expect (neat-op-supported-p conn "interrupt") :to-be nil)))
+
+  (it "reads ops sent as a list"
+    (let ((conn (neat-connection--make
+                 :capabilities (car (neat-bencode-decode
+                                     "d3:opsl5:clone4:evalee")))))
+      (expect (neat-op-supported-p conn "eval") :to-be-truthy)
+      (expect (neat-op-supported-p conn "lookup") :to-be nil)))
+
+  (it "treats every op as supported before describe answers"
+    (expect (neat-op-supported-p (neat-connection--make) "interrupt")
+            :to-be-truthy))
+
+  (it "treats every op as supported when describe lists none"
+    (dolist (caps (list '(("versions" . (("nrepl" . (("major" . 1))))))
+                        (car (neat-bencode-decode "d3:opsdee"))
+                        (car (neat-bencode-decode "d3:opslee"))))
+      (expect (neat-op-supported-p (neat-connection--make :capabilities caps)
+                                   "interrupt")
+              :to-be-truthy))))
+
+(describe "neat-interrupt"
+  (it "builds an interrupt op with session and interrupt-id"
+    (let ((conn (neat-connection--make))
+          sent)
+      (setf (neat-connection-session conn) "S-3")
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-interrupt conn nil "42")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "op") :to-equal "interrupt")
+          (expect (neat-bencode-get decoded "session") :to-equal "S-3")
+          (expect (neat-bencode-get decoded "interrupt-id")
+                  :to-equal "42")))))
+
+  (it "omits interrupt-id when none is given"
+    (let ((conn (neat-connection--make))
+          sent)
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-interrupt conn "S-4")
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "session") :to-equal "S-4")
+          (expect (assoc "interrupt-id" decoded) :to-be nil))))))
+
+(describe "neat-close-session"
+  (it "builds a close op for the current session"
+    (let ((conn (neat-connection--make))
+          sent)
+      (setf (neat-connection-session conn) "S-5")
+      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_p s) (setq sent s))))
+        (neat-close-session conn)
+        (let ((decoded (car (neat-bencode-decode sent))))
+          (expect (neat-bencode-get decoded "op") :to-equal "close")
+          (expect (neat-bencode-get decoded "session") :to-equal "S-5"))))))
+
 (describe "neat-eval"
   (it "includes the session and code fields in the sent message"
     (let ((conn (neat-connection--make))

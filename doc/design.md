@@ -103,9 +103,13 @@ prints their output above the prompt.
 ### Op discovery via `describe`, no hardcoded Clojurisms
 
 nREPL is a protocol; servers advertise the ops they implement via the
-`describe` op. neat sends `describe` on connect and stashes the response
-on the connection. UI-level features like CAPF and eldoc consult that
-capability map and silently no-op when the op they need is missing.
+`describe` op. neat sends `describe` on connect and keeps the response
+on the connection, and `neat-op-supported-p` answers from it.
+Completion, eldoc and xref quietly step aside when the op they need is
+missing. The doc lookup and interrupt commands tell you instead, as
+you asked for them directly. A server that lists no ops at all gets
+the benefit of the doubt, so we just send the request and see what
+comes back.
 There are no hardcoded `clojure.repl/doc` forms, no assumption the
 server runs on a JVM, no Leiningen or Clojure CLI defaults baked into
 the connect command.
