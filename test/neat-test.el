@@ -329,7 +329,7 @@ POS is a 1-indexed buffer position."
       (spy-on 'neat-active-connection :and-return-value conn)
       (spy-on 'neat-connection-live-p :and-return-value t)
       (spy-on 'neat-lookup-async
-              :and-call-fake (lambda (_c _sym _ns cb) (funcall cb nil)))
+              :and-call-fake (lambda (_c _sym _ns _timeout cb) (funcall cb nil)))
       (with-temp-buffer
         (insert "(map ")
         (neat-eldoc-function (lambda (&rest args) (push args calls))))
@@ -375,6 +375,63 @@ POS is a 1-indexed buffer position."
   (it "tells the user interrupt isn't supported"
     (expect (neat-interrupt-eval) :to-throw 'user-error)
     (expect 'neat-interrupt :not :to-have-been-called)))
+
+(describe "tooling while an eval is in flight"
+  :var (conn)
+  (before-each
+    (setq conn (neat-connection--make :host "h" :port 1 :evals '("5")))
+    (spy-on 'neat-active-connection :and-return-value conn)
+    (spy-on 'neat-connection-live-p :and-return-value t)
+    (spy-on 'neat-completions-sync)
+    (spy-on 'neat-lookup))
+
+  (it "goes ahead while the server keeps answering"
+    ;; nREPL answers tooling ops mid-eval, so nothing gets held back.
+    (with-temp-buffer
+      (insert "ma")
+      (neat-completion-at-point)
+      (expect 'neat-completions-sync :to-have-been-called)))
+
+  (it "skips completion-at-point once requests stall"
+    (setf (neat-connection-stalled conn) (float-time))
+    (with-temp-buffer
+      (insert "ma")
+      (expect (neat-completion-at-point) :to-be nil)
+      (expect 'neat-completions-sync :not :to-have-been-called)))
+
+  (it "keeps eldoc to one lookup in flight"
+    (let (pending-callback)
+      (spy-on 'neat-lookup-async
+              :and-call-fake (lambda (_c _sym _ns _timeout cb)
+                               (setq pending-callback cb)))
+      (with-temp-buffer
+        (insert "(map ")
+        (expect (neat-eldoc-function #'ignore) :to-be-truthy)
+        (expect (neat-eldoc-function #'ignore) :to-be nil)
+        (expect 'neat-lookup-async :to-have-been-called-times 1)
+        ;; Once the first one is answered the next can go.
+        (funcall pending-callback nil)
+        (expect (neat-eldoc-function #'ignore) :to-be-truthy)
+        (expect 'neat-lookup-async :to-have-been-called-times 2)
+        (funcall pending-callback nil))))
+
+  (it "doesn't leave eldoc stuck when the ns or the send fails"
+    (with-temp-buffer
+      (insert "(map ")
+      (let ((neat-buffer-ns-function (lambda () (error "No ns here"))))
+        (expect (neat-eldoc-function #'ignore) :to-throw 'error))
+      (expect (gethash conn neat--eldoc-in-flight) :to-be nil)
+      (spy-on 'neat-lookup-async
+              :and-call-fake (lambda (&rest _) (error "Can't send")))
+      (expect (neat-eldoc-function #'ignore) :to-throw 'error)
+      (expect (gethash conn neat--eldoc-in-flight) :to-be nil)))
+
+  (it "skips eldoc once requests stall"
+    (setf (neat-connection-stalled conn) (float-time))
+    (with-temp-buffer
+      (insert "(map ")
+      (expect (neat-eldoc-function #'ignore) :to-be nil)
+      (expect 'neat-lookup :not :to-have-been-called))))
 
 (describe "neat-interrupt-eval"
   :var (conn callback)

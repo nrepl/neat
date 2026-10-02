@@ -404,6 +404,12 @@ not necessarily resolvable on the server side."
 ;; server whose `describe' lists no ops at all gets the benefit of the
 ;; doubt: the request goes out, comes back `unknown-op' if the op isn't
 ;; there, the sync helpers return nil, and we end up in the same place.
+;;
+;; Completion and eldoc also hold off while `neat-tooling-stalled-p'
+;; says requests would only queue up behind a running eval, and eldoc
+;; keeps to one lookup in flight per connection.  Otherwise every
+;; completion attempt would sit out its full timeout, and eldoc
+;; lookups would pile up and all answer long after point moved on.
 
 (defcustom neat-completion-timeout 1.0
   "Seconds to wait for a `completions' response before giving up."
@@ -495,7 +501,8 @@ surfaced via `:annotation-function' in the completion UI."
              (prefix (buffer-substring-no-properties start end)))
         (when (and conn (neat-connection-live-p conn)
                    (neat-op-supported-p conn "completions")
-                   (>= (length prefix) 1))
+                   (>= (length prefix) 1)
+                   (not (neat-tooling-stalled-p conn)))
           (let ((cands (delq nil
                              (mapcar #'neat--candidate-with-type
                                      (neat-completions-sync
@@ -633,6 +640,11 @@ Produces the eldoc display string from a `lookup' INFO dict.  The
 default understands Clojure/Lisp-shape arglists `[a b & rest]';
 override for servers that report arglists in a different syntax.")
 
+(defvar neat--eldoc-in-flight (make-hash-table :test 'eq :weakness 'key)
+  "Connections with an eldoc lookup still waiting for its answer.
+Only one goes out at a time per connection, so lookups can't pile up
+behind a server that's busy with something else.")
+
 (defun neat-eldoc-function (callback &rest _ignored)
   "Eldoc backend driven by the `lookup' op.
 
@@ -646,17 +658,30 @@ the editor."
         (sym (neat--eldoc-thing-at-point))
         (arg-index (funcall neat-eldoc-arg-index-function)))
     (when (and conn sym (neat-connection-live-p conn)
-               (neat-op-supported-p conn "lookup"))
-      (neat-lookup-async
-       conn sym (neat--tooling-ns conn)
-       (lambda (info)
-         (let ((str (and info (funcall neat-eldoc-arglist-formatter
-                                       info arg-index))))
-           ;; A nil tells eldoc there's nothing to wait for, so other
-           ;; backends' docs can go up.
-           (if str
-               (funcall callback str :thing sym)
-             (funcall callback nil)))))
+               (neat-op-supported-p conn "lookup")
+               (not (gethash conn neat--eldoc-in-flight))
+               (not (neat-tooling-stalled-p conn)))
+      (let ((ns (neat--tooling-ns conn))
+            (sent nil))
+        (puthash conn t neat--eldoc-in-flight)
+        (unwind-protect
+            (progn
+              (neat-lookup-async
+               conn sym ns neat-lookup-timeout
+               (lambda (info)
+                 (remhash conn neat--eldoc-in-flight)
+                 (let ((str (and info (funcall neat-eldoc-arglist-formatter
+                                               info arg-index))))
+                   ;; A nil tells eldoc there's nothing to wait for, so
+                   ;; other backends' docs can go up.
+                   (if str
+                       (funcall callback str :thing sym)
+                     (funcall callback nil)))))
+              (setq sent t))
+          ;; If the lookup never went out, no answer will come to
+          ;; clear the flag.
+          (unless sent
+            (remhash conn neat--eldoc-in-flight))))
       ;; Tell eldoc we'll call the callback asynchronously.
       t)))
 
