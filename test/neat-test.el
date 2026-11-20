@@ -172,6 +172,21 @@ POS is a 1-indexed buffer position."
                     (lambda () (neat--eval-string "(+ 1 2)")))))
         (expect (plist-get plist :ns) :to-equal "my.ns"))))
 
+  (it "neat-set-ns clears the namespace on empty input, a prefix argument or nil"
+    (with-temp-buffer
+      (setq neat-ns "my.ns")
+      (spy-on 'read-from-minibuffer :and-return-value "")
+      (call-interactively #'neat-set-ns)
+      (expect neat-ns :to-be nil)
+      (setq neat-ns "my.ns")
+      (let ((current-prefix-arg '(4)))
+        (call-interactively #'neat-set-ns))
+      (expect neat-ns :to-be nil)
+      (expect 'read-from-minibuffer :to-have-been-called-times 1)
+      (setq neat-ns "my.ns")
+      (neat-set-ns nil)
+      (expect neat-ns :to-be nil)))
+
   (it "honours a custom neat-buffer-ns-function override"
     (let ((neat-buffer-ns-function (lambda () "derived.ns")))
       (with-temp-buffer

@@ -265,12 +265,11 @@ example, a `(ns foo.bar)' form in Clojure).  Whatever is returned
 becomes the `ns' field on the `eval', `completions' and `lookup' ops.")
 
 (defun neat-set-ns (ns)
-  "Set the buffer-local namespace `neat-ns' to NS for subsequent evaluations.
-Empty input clears the override."
+  "Set `neat-ns' to NS; nil, empty input or a prefix argument clears it."
   (interactive
-   (list (read-string (format-prompt "Namespace" neat-ns)
-                      nil nil neat-ns)))
-  (setq neat-ns (if (string-empty-p ns) nil ns))
+   (list (unless current-prefix-arg
+           (read-from-minibuffer "Namespace: " nil nil nil nil neat-ns))))
+  (setq neat-ns (if (or (null ns) (string-empty-p ns)) nil ns))
   (message "Neat: ns is %s" (or neat-ns "(unset)")))
 
 (defun neat--tooling-ns (conn)
