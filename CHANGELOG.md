@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Quitting the REPL closes its session on the server.
   - Requests still pending when a connection drops get a `connection-closed` status instead of `interrupted`, and `neat-bencode-encode` signals on nil.
 
+### Fixed
+
+- `neat-set-ns` clears the namespace on empty input, a prefix argument or nil; empty input used to keep the current value.
+
 ## [0.1.0] - 2026-05-20
 
 ### Added
